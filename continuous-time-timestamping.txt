@@ -1,0 +1,25 @@
+The assumptions:
+- All clients and servers see the same clock (but they may lie about it)
+- At least one of the servers follows the protocol
+
+The goal:
+- Liveness: Any state the system can evolve to, when isolated and repeatedly fed
+  presented with a single transaction $x$ should eventually execute $x$.
+- Correctness: if a honest server receives $y$ before $x$, $x$ does not get
+  executed before $y$.
+
+
+
+"Acknowledged by all servers" is not a good metric of message arrival time
+because of the following attack. If at some time all but one server have
+acknowledged receiving a message, the last server can stall it and broadcast its
+own message.  The other unsuspecting servers would ack that message and it would
+end up earlier in the total order of all messages than the message the bad node
+is stalling. Just a single node could change the relative order of any incoming
+transactions.
+
+Considering a message to have arrived at a certain time without consulting all
+the servers would allow collusion attacks by the other k-1 servers, thus
+breaking the anytrust security target.
+
+Reliably ordering continuous time events is therefore impossible in the anytrust model.
