@@ -10,6 +10,8 @@ import (
 	"net"
 	"database/sql"
 	_ "github.com/mattn/go-sqlite3"
+	"code.google.com/p/go.crypto/nacl/secretbox"
+	"crypto/rand"
 
 	"code.google.com/p/goprotobuf/proto"
 	"github.com/andres-erbsen/sgp"
@@ -62,7 +64,15 @@ func handleClient(db *sql.DB, conn net.Conn) {
 	}
 	log.Print("valid transfer of \"", string(new_mapping.Name), "\" to ", pk)
 	// TODO: add transaction/xfer/change to queue
+	
+	var box []byte
+	box = secretbox.Seal(box[:0], rq_bs, &[24]byte{}, &[32]byte{})
+
+	var key [32]byte
+	err = db.QueryRow("SELECT key from rounds ORDER BY id DESC LIMIT 1;").Scan(key[:])
+	fmt.Println(key)
 }
+
 
 func main () {
 	db, err := sql.Open("sqlite3", "dename.db")
@@ -70,6 +80,14 @@ func main () {
 		log.Fatal("Cannot open dename.db", err)
 	}
 	defer db.Close()
+
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS transaction_queue (
+		id integer not null primary key autoincrement,
+		round integer not null,
+		request blob not null);`)
+	if err != nil {
+		log.Fatal("Cannot create table transaction_queue", err)
+	}
 
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS name_mapping (
 		id integer not null primary key,
@@ -79,12 +97,25 @@ func main () {
 		log.Fatal("Cannot create table name_mapping", err)
 	}
 
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS transaction_queue (
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS rounds (
 		id integer not null primary key,
-		round integer not null,
-		request blob not null);`)
+		key blob not null);`)
 	if err != nil {
-		log.Fatal("Cannot create table transaction_queue", err)
+		log.Fatal("Cannot create table rounds", err)
+	}
+
+	var id int
+	err = db.QueryRow("select id from rounds").Scan(&id)
+	if err == sql.ErrNoRows {
+		var key [32]byte
+		_, err = io.ReadFull(rand.Reader, key[:])
+		if err != nil {
+			log.Fatal(err)
+		}
+		_, err = db.Exec("INSERT INTO rounds(id,key) VALUES(?,?)", 0, key[:])
+		if err != nil {
+			log.Fatal("Cannot initialize table rounds", err)
+		}
 	}
 
 	peersfile, err := os.Open("peers.txt")
