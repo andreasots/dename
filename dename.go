@@ -166,7 +166,7 @@ func handleClient(db *sql.DB, peer_broadcast chan []byte, conn net.Conn) {
 	if !pk.Verify(signed_rq) {
 		return
 	}
-	log.Print("valid transfer of \"", string(new_mapping.Name))
+	log.Print("valid transfer of \"", string(new_mapping.Name),"\"")
 
 	// Look up the key we use to encrypt this round's queue messages
 	var key_slice []byte
@@ -230,6 +230,12 @@ func handleAllPeers(addr2peer map[string]*Peer, broadcast chan []byte, peer_conn
 }
 
 func main() {
+	var ourip string
+	if len(os.Args) == 1 {
+		ourip = "0.0.0.0"
+	else {
+		ourip = os.Args[1]
+	}
 	db, err := sql.Open("sqlite3", "dename.db")
 	if err != nil {
 		log.Fatal("Cannot open dename.db", err)
@@ -281,7 +287,7 @@ func main() {
 	}
 	go handleAllPeers(addr2peer, broadcast, peer_connected)
 
-	our_server_tcpaddr, err := net.ResolveTCPAddr("tcp", "0.0.0.0:6362")
+	our_server_tcpaddr, err := net.ResolveTCPAddr("tcp", ourip+":6362")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -297,7 +303,7 @@ func main() {
 		}
 	}()
 
-	client_lnr, err := net.Listen("tcp", "0.0.0.0:6263")
+	client_lnr, err := net.Listen("tcp", ourip+":6263")
 	if err != nil {
 		log.Fatal(err)
 	}
