@@ -27,7 +27,8 @@ func create_tables(db *sql.DB) {
 
 	// servers
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS servers (
-		id integer not null primary key);`)
+		id integer not null primary key,
+		host blob unique not null);`)
 	if err != nil {
 		log.Fatal("Cannot create table servers: ", err)
 	}
@@ -93,7 +94,7 @@ func create_tables(db *sql.DB) {
 		log.Fatal("Cannot read table servers: ", err)
 	}
 	if ok == 0 {
-		_, err = db.Exec("INSERT INTO servers(id) VALUES(?)", OUR_SERVER_ID)
+		_, err = db.Exec("INSERT OR REPLACE INTO servers(id,host) VALUES(?,?)", OUR_SERVER_ID, "127.0.0.1")
 		if err != nil {
 			log.Fatal("Cannot initialize table servers: ", err)
 		}
@@ -204,6 +205,7 @@ func main () {
 	if err != nil {
 		log.Fatal("Cannot open peers.txt", err)
 	}
+	host2pk := make(map[string]*sgp.Entity)
 	for i:=1; ; i++ {
 		var host, pk_type, pk_b64 string
 		_, err := fmt.Fscanf(peersfile, "%s %s %s\n", &host, &pk_type, &pk_b64)
@@ -216,19 +218,28 @@ func main () {
 		if pk_type != "sgp" {
 			log.Fatal("pk_type != sgp in peers.txt on line ",i)
 		}
-		_, err = base64.StdEncoding.DecodeString(pk_b64)
+		pk_bytes, err := base64.StdEncoding.DecodeString(pk_b64)
 		if err != nil {
 			log.Fatal("Bad base64 in peers.txt on line ",i)
 		}
+		pk := &sgp.Entity{}
+		err = pk.Parse(pk_bytes)
+		if err != nil {
+			log.Fatal("Bad pk in peers.txt on line ",i," for ", host,": ", err)
+		}
+		host2pk[host] = pk;
+		
 		// conn, err := net.Dial("tcp", host)
+		_, err = db.Exec("INSERT OR IGNORE INTO servers(host) VALUES(?)", host)
+		if err != nil {
+			log.Fatal("Cannot insert server ", host, ": ", err)
+		}
 	}
 
-	_, err = net.Listen("tcp", "0.0.0.0:6362")	
+	_, err = net.Listen("tcp", "0.0.0.0:6362")
 	if err != nil {
 		log.Fatal(err)
 	}
-	// other servers...
-
 	client_lnr, err := net.Listen("tcp", "0.0.0.0:6263")	
 	if err != nil {
 		log.Fatal(err)
