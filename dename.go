@@ -27,8 +27,7 @@ func create_tables(db *sql.DB) {
 
 	// servers
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS servers (
-		id integer not null primary key,
-		host blob unique not null);`)
+		id integer not null primary key);`)
 	if err != nil {
 		log.Fatal("Cannot create table servers: ", err)
 	}
@@ -58,7 +57,7 @@ func create_tables(db *sql.DB) {
 		round integer not null,
 		introducer integer not null,
 		request blob not null,
-		FOREIGN KEY(round) REFERENCES round(id),
+		FOREIGN KEY(round) REFERENCES rounds(id),
 		FOREIGN KEY(introducer) REFERENCES servers(id));`)
 	if err != nil {
 		log.Fatal("Cannot create table transaction_queue: ", err)
@@ -94,7 +93,7 @@ func create_tables(db *sql.DB) {
 		log.Fatal("Cannot read table servers: ", err)
 	}
 	if ok == 0 {
-		_, err = db.Exec("INSERT OR REPLACE INTO servers(id,host) VALUES(?,?)", OUR_SERVER_ID, "127.0.0.1")
+		_, err = db.Exec("INSERT OR REPLACE INTO servers(id) VALUES(?)", OUR_SERVER_ID)
 		if err != nil {
 			log.Fatal("Cannot initialize table servers: ", err)
 		}
@@ -123,7 +122,7 @@ func create_tables(db *sql.DB) {
 }
 
 
-func handleClient(db *sql.DB, conn net.Conn) {
+func handleClient(db *sql.DB, peer_broadcast chan []byte, conn net.Conn) {
 	defer conn.Close()
 	rq_bs, err := ioutil.ReadAll(conn)
 	if err != nil {
@@ -167,30 +166,53 @@ func handleClient(db *sql.DB, conn net.Conn) {
 	if ! pk.Verify(signed_rq) {
 		return
 	}
-	log.Print("valid transfer of \"", string(new_mapping.Name), "\" to ", pk)
-
-	// Is this update new to us?
-	var exists int
-	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM transaction_queue WHERE request = ?)", rq_bs).Scan(&exists)
-	if exists == 1 {
-		log.Print("Request already in queue")
-		return
-	}
+	log.Print("valid transfer of \"", string(new_mapping.Name))
 
 	// Look up the key we use to encrypt this round's queue messages
 	var key_slice []byte
-	err = db.QueryRow("SELECT key FROM rounds ORDER BY id DESC LIMIT 1;").Scan(&key_slice)
+	var round int
+	err = db.QueryRow("SELECT round,key FROM round_keys WHERE server = 0 ORDER BY id DESC LIMIT 1;").Scan(&round, &key_slice)
+	if err != nil {
+		log.Fatal("Cannot get latest round key: ", err)
+	}
+	key := new([32]byte)
+	copy(key[:], key_slice)
+	log.Print("Round ", round, " with key ", key)
+
+	nonce := new([24]byte)
+	_, err = io.ReadFull(rand.Reader, nonce[:])
 	if err != nil {
 		log.Fatal(err)
 	}
-	var key [32]byte
-	copy(key[:], key_slice)
-	log.Print(key)
 	
-	var box []byte
-	box = secretbox.Seal(box[:0], rq_bs, &[24]byte{}, &key)
+	var rq_box []byte
+	rq_box = secretbox.Seal(rq_box[:0], rq_bs, nonce, key)
+	rq_box = append(rq_box, nonce[:]...)
+	_, err = db.Exec("INSERT INTO transaction_queue(round,introducer,request) VALUES(?,?,?);",
+			round, OUR_SERVER_ID, rq_box)
+	if err != nil {
+		log.Print(round, OUR_SERVER_ID, rq_box)
+		log.Fatal("Cannot insert new transaction to queue: ", err)
+	}
+	peer_broadcast <- rq_box
 }
 
+type Peer struct {
+	index int
+	addr string
+	pk *sgp.Entity
+}
+
+func handleAllPeers(addr2peer map[string]*Peer, broadcast chan []byte, peer_connected chan net.Conn) {
+	for {
+		select {
+		case conn := <- peer_connected:
+			log.Print("peer connected: ", conn)
+		case msg := <- broadcast:
+			log.Print("broadcast: ", msg)
+		}
+	}
+}
 
 func main () {
 	db, err := sql.Open("sqlite3", "dename.db")
@@ -205,8 +227,10 @@ func main () {
 	if err != nil {
 		log.Fatal("Cannot open peers.txt", err)
 	}
-	host2pk := make(map[string]*sgp.Entity)
-	for i:=1; ; i++ {
+	addr2peer := make(map[string]*Peer)
+	broadcast := make(chan []byte)
+	peer_connected := make(chan net.Conn)
+	for i:=1; ; i++ { // i=0 is our server
 		var host, pk_type, pk_b64 string
 		_, err := fmt.Fscanf(peersfile, "%s %s %s\n", &host, &pk_type, &pk_b64)
 		if err == io.EOF {
@@ -227,25 +251,38 @@ func main () {
 		if err != nil {
 			log.Fatal("Bad pk in peers.txt on line ",i," for ", host,": ", err)
 		}
-		host2pk[host] = pk;
-		
-		// conn, err := net.Dial("tcp", host)
-		_, err = db.Exec("INSERT OR IGNORE INTO servers(host) VALUES(?)", host)
+		addr_struct, err := net.ResolveIPAddr("",host)
 		if err != nil {
-			log.Fatal("Cannot insert server ", host, ": ", err)
+			log.Fatal("Cannot lookup ", host, err)
 		}
+		addr := addr_struct.String()
+		addr2peer[addr] = &Peer{index:i, addr:addr, pk:pk};
+		
+		_, err = db.Exec("INSERT OR IGNORE INTO servers(id) VALUES(?)", i)
+		if err != nil {
+			log.Fatal("Cannot insert server ", i, ": ", err)
+		}
+		// conn, err := net.Dial("tcp", host)
 	}
+	go handleAllPeers(addr2peer, broadcast, peer_connected)
 
-	_, err = net.Listen("tcp", "0.0.0.0:6362")
+	peer_lnr, err := net.Listen("tcp", "0.0.0.0:6362")
 	if err != nil {
 		log.Fatal(err)
 	}
-	client_lnr, err := net.Listen("tcp", "0.0.0.0:6263")	
+	go func() {
+		for {
+			conn, _ := peer_lnr.Accept()
+			peer_connected <- conn
+		}
+	}()
+
+	client_lnr, err := net.Listen("tcp", "0.0.0.0:6263")
 	if err != nil {
 		log.Fatal(err)
 	}
 	for {
 		conn, _ := client_lnr.Accept()
-		go handleClient(db, conn)
+		go handleClient(db, broadcast, conn)
 	}
 }
