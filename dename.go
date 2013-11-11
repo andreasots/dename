@@ -12,6 +12,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net"
+	"strings"
 	"os"
 
 	"code.google.com/p/goprotobuf/proto"
@@ -209,7 +210,11 @@ func handleAllPeers(addr2peer map[string]*Peer, broadcast chan []byte, peer_conn
 		select {
 		case conn := <-peer_connected:
 			log.Print("peer connected: ", conn)
-			peer := addr2peer[conn.RemoteAddr().String()]
+			addr := strings.SplitN(conn.RemoteAddr().String(),":",2)[0]
+			peer := addr2peer[addr]
+			if peer == nil {
+				log.Print(addr, " is not our friend")
+			}
 			peer.connections = append(peer.connections, conn)
 		case msg := <-broadcast:
 			log.Print("broadcast: ", msg)
@@ -233,7 +238,7 @@ func main() {
 	var ourip string
 	if len(os.Args) == 1 {
 		ourip = "0.0.0.0"
-	else {
+	} else {
 		ourip = os.Args[1]
 	}
 	db, err := sql.Open("sqlite3", "dename.db")
@@ -250,7 +255,7 @@ func main() {
 	}
 	addr2peer := make(map[string]*Peer)
 	broadcast := make(chan []byte)
-	peer_connected := make(chan *net.TCPConn)
+	peer_connected := make(chan *net.TCPConn, 100) // TODO: "infinite size"
 	for i := 1; ; i++ { // i=0 is our server
 		var host, pk_type, pk_b64 string
 		_, err := fmt.Fscanf(peersfile, "%s %s %s\n", &host, &pk_type, &pk_b64)
@@ -277,13 +282,32 @@ func main() {
 			log.Fatal("Cannot lookup ", host, err)
 		}
 		addr := addr_struct.String()
-		addr2peer[addr] = &Peer{index: i, addr: addr, pk: pk}
+		addr2peer[addr] = &Peer{index: i, addr: addr,
+                                        pk: pk, connections: make([]*net.TCPConn,0,1)}
 
 		_, err = db.Exec("INSERT OR IGNORE INTO servers(id) VALUES(?)", i)
 		if err != nil {
 			log.Fatal("Cannot insert server ", i, ": ", err)
 		}
-		// conn, err := net.Dial("tcp", host)
+
+		// pick an ephermal port with the given ip as local address
+		laddr_ip, err := net.ResolveIPAddr("", ourip)
+		if err != nil {
+			log.Fatal("resolve our ip: ", err)
+		}
+		laddr := &net.TCPAddr{IP: laddr_ip.IP}
+
+		raddr, err := net.ResolveTCPAddr("tcp", host+":6362")
+		if err != nil {
+			log.Fatal(err)
+		}
+		conn, err := net.DialTCP("tcp", laddr, raddr)
+		if err == nil {
+			conn.SetNoDelay(false)
+			peer_connected <- conn
+		} else {
+			log.Print("connect to peer: ", err, laddr, raddr)
+		}
 	}
 	go handleAllPeers(addr2peer, broadcast, peer_connected)
 
@@ -297,9 +321,13 @@ func main() {
 	}
 	go func() {
 		for {
-			conn, _ := peer_lnr.AcceptTCP()
-			conn.SetNoDelay(false)
-			peer_connected <- conn
+			conn, err := peer_lnr.AcceptTCP()
+			if err == nil {
+				conn.SetNoDelay(false)
+				peer_connected <- conn
+			} else {
+				log.Print(err)
+			}
 		}
 	}()
 
