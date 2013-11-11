@@ -17,6 +17,111 @@ import (
 	"github.com/andres-erbsen/sgp"
 )
 
+const OUR_SERVER_ID = 0
+
+func create_tables(db *sql.DB) {
+	_, err := db.Exec(`PRAGMA foreign_keys = ON;`)
+	if err != nil {
+		log.Fatal("Cannot PRAGMA foreign_keys = ON: ", err)
+	}
+
+	// servers
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS servers (
+		id integer not null primary key);`)
+	if err != nil {
+		log.Fatal("Cannot create table servers: ", err)
+	}
+
+	// rounds
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS rounds (
+		id integer not null primary key);`)
+	if err != nil {
+		log.Fatal("Cannot create table rounds: ", err)
+	}
+
+	// round_keys
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS round_keys (
+		id integer not null primary key,
+		round integer not null,
+		server integer not null,
+		key blob not null,
+		FOREIGN KEY(round) REFERENCES rounds(id),
+		FOREIGN KEY(server) REFERENCES servers(id));`)
+	if err != nil {
+		log.Fatal("Cannot create table round_keys: ", err)
+	}
+
+	// transaction_queue
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS transaction_queue (
+		id integer not null primary key autoincrement,
+		round integer not null,
+		introducer integer not null,
+		request blob not null,
+		FOREIGN KEY(round) REFERENCES round(id),
+		FOREIGN KEY(introducer) REFERENCES servers(id));`)
+	if err != nil {
+		log.Fatal("Cannot create table transaction_queue: ", err)
+	}
+
+	// commitments
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS commitments (
+		id integer not null primary key,
+		round integer not null,
+		commiter integer not null,
+		acknowledger integer not null,
+		signature blob not null,
+		FOREIGN KEY(round) REFERENCES rounds(id),
+		FOREIGN KEY(commiter) REFERENCES servers(id),
+		FOREIGN KEY(acknowledger) REFERENCES servers(id));`)
+	if err != nil {
+		log.Fatal("Cannot create table commitments: ", err)
+	}
+
+	// name_mapping
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS name_mapping (
+		id integer not null primary key,
+		name blob not null,
+		pubkey blob not null);`)
+	if err != nil {
+		log.Fatal("Cannot create table name_mapping: ", err)
+	}
+
+	// our server
+	var ok int
+	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM servers)").Scan(&ok)
+	if err != nil {
+		log.Fatal("Cannot read table servers: ", err)
+	}
+	if ok == 0 {
+		_, err = db.Exec("INSERT INTO servers(id) VALUES(?)", OUR_SERVER_ID)
+		if err != nil {
+			log.Fatal("Cannot initialize table servers: ", err)
+		}
+	}
+
+	// first round and round key
+	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM round_keys)").Scan(&ok)
+	if err != nil {
+		log.Fatal("Cannot read table rounds: ", err)
+	}
+	if ok == 0 {
+		_, err = db.Exec("INSERT INTO rounds(id) VALUES(0)")
+		if err != nil {
+			log.Fatal("Cannot initialize table rounds: ", err)
+		}
+		var key [32]byte
+		_, err = io.ReadFull(rand.Reader, key[:])
+		if err != nil {
+			log.Fatal(err)
+		}
+		_, err = db.Exec("INSERT INTO round_keys(id,round,server,key) VALUES(0,0,0,?)", key[:])
+		if err != nil {
+			log.Fatal("Cannot initialize table round_keys: ", err)
+		}
+	}
+}
+
+
 func handleClient(db *sql.DB, conn net.Conn) {
 	defer conn.Close()
 	rq_bs, err := ioutil.ReadAll(conn)
@@ -42,11 +147,10 @@ func handleClient(db *sql.DB, conn net.Conn) {
 		return
 	}
 
-	// look up the old pk from the database
 	fmt.Println(string(new_mapping.Name))
 	var pk_bytes []byte
 	pk := &sgp.Entity{}
-	err = db.QueryRow("select pubkey from name_mapping where name = ?", new_mapping.Name).Scan(&pk_bytes)
+	err = db.QueryRow("SELECT pubkey FROM name_mapping WHERE name = ?", new_mapping.Name).Scan(&pk_bytes)
 	if err == nil {
 		err = pk.Parse(pk_bytes)
 		if err != nil {
@@ -63,14 +167,27 @@ func handleClient(db *sql.DB, conn net.Conn) {
 		return
 	}
 	log.Print("valid transfer of \"", string(new_mapping.Name), "\" to ", pk)
-	// TODO: add transaction/xfer/change to queue
+
+	// Is this update new to us?
+	var exists int
+	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM transaction_queue WHERE request = ?)", rq_bs).Scan(&exists)
+	if exists == 1 {
+		log.Print("Request already in queue")
+		return
+	}
+
+	// Look up the key we use to encrypt this round's queue messages
+	var key_slice []byte
+	err = db.QueryRow("SELECT key FROM rounds ORDER BY id DESC LIMIT 1;").Scan(&key_slice)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var key [32]byte
+	copy(key[:], key_slice)
+	log.Print(key)
 	
 	var box []byte
-	box = secretbox.Seal(box[:0], rq_bs, &[24]byte{}, &[32]byte{})
-
-	var key [32]byte
-	err = db.QueryRow("SELECT key from rounds ORDER BY id DESC LIMIT 1;").Scan(key[:])
-	fmt.Println(key)
+	box = secretbox.Seal(box[:0], rq_bs, &[24]byte{}, &key)
 }
 
 
@@ -81,42 +198,7 @@ func main () {
 	}
 	defer db.Close()
 
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS transaction_queue (
-		id integer not null primary key autoincrement,
-		round integer not null,
-		request blob not null);`)
-	if err != nil {
-		log.Fatal("Cannot create table transaction_queue", err)
-	}
-
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS name_mapping (
-		id integer not null primary key,
-		name blob not null,
-		pubkey blob not null);`)
-	if err != nil {
-		log.Fatal("Cannot create table name_mapping", err)
-	}
-
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS rounds (
-		id integer not null primary key,
-		key blob not null);`)
-	if err != nil {
-		log.Fatal("Cannot create table rounds", err)
-	}
-
-	var id int
-	err = db.QueryRow("select id from rounds").Scan(&id)
-	if err == sql.ErrNoRows {
-		var key [32]byte
-		_, err = io.ReadFull(rand.Reader, key[:])
-		if err != nil {
-			log.Fatal(err)
-		}
-		_, err = db.Exec("INSERT INTO rounds(id,key) VALUES(?,?)", 0, key[:])
-		if err != nil {
-			log.Fatal("Cannot initialize table rounds", err)
-		}
-	}
+	create_tables(db)
 
 	peersfile, err := os.Open("peers.txt")
 	if err != nil {
