@@ -1,17 +1,18 @@
 package main
 
 import (
-	"os"
-	"io"
-	"io/ioutil"
-	"fmt"
-	"encoding/base64" 
-	"log"
-	"net"
-	"database/sql"
-	_ "github.com/mattn/go-sqlite3"
 	"code.google.com/p/go.crypto/nacl/secretbox"
 	"crypto/rand"
+	"database/sql"
+	"encoding/base64"
+	"encoding/binary"
+	"fmt"
+	_ "github.com/mattn/go-sqlite3"
+	"io"
+	"io/ioutil"
+	"log"
+	"net"
+	"os"
 
 	"code.google.com/p/goprotobuf/proto"
 	"github.com/andres-erbsen/sgp"
@@ -121,14 +122,13 @@ func create_tables(db *sql.DB) {
 	}
 }
 
-
 func handleClient(db *sql.DB, peer_broadcast chan []byte, conn net.Conn) {
 	defer conn.Close()
 	rq_bs, err := ioutil.ReadAll(conn)
 	if err != nil {
 		return
 	}
-	
+
 	signed_rq := &sgp.Signed{}
 	err = proto.Unmarshal(rq_bs, signed_rq)
 	if err != nil {
@@ -159,11 +159,11 @@ func handleClient(db *sql.DB, peer_broadcast chan []byte, conn net.Conn) {
 	} else if err == sql.ErrNoRows {
 		// new name being claimed
 		pk = new_pk
-	} else  {
+	} else {
 		log.Fatal(err) // FIXME: check error type
 	}
 
-	if ! pk.Verify(signed_rq) {
+	if !pk.Verify(signed_rq) {
 		return
 	}
 	log.Print("valid transfer of \"", string(new_mapping.Name))
@@ -184,37 +184,52 @@ func handleClient(db *sql.DB, peer_broadcast chan []byte, conn net.Conn) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	
+
 	var rq_box []byte
 	rq_box = secretbox.Seal(rq_box[:0], rq_bs, nonce, key)
 	rq_box = append(rq_box, nonce[:]...)
 	_, err = db.Exec("INSERT INTO transaction_queue(round,introducer,request) VALUES(?,?,?);",
-			round, OUR_SERVER_ID, rq_box)
+		round, OUR_SERVER_ID, rq_box)
 	if err != nil {
 		log.Print(round, OUR_SERVER_ID, rq_box)
 		log.Fatal("Cannot insert new transaction to queue: ", err)
 	}
-	peer_broadcast <- rq_box
+	peer_broadcast <- append([]byte{1}, rq_box...)
 }
 
 type Peer struct {
-	index int
-	addr string
-	pk *sgp.Entity
+	index       int
+	addr        string
+	pk          *sgp.Entity
+	connections []*net.TCPConn
 }
 
-func handleAllPeers(addr2peer map[string]*Peer, broadcast chan []byte, peer_connected chan net.Conn) {
+func handleAllPeers(addr2peer map[string]*Peer, broadcast chan []byte, peer_connected chan *net.TCPConn) {
 	for {
 		select {
-		case conn := <- peer_connected:
+		case conn := <-peer_connected:
 			log.Print("peer connected: ", conn)
-		case msg := <- broadcast:
+			peer := addr2peer[conn.RemoteAddr().String()]
+			peer.connections = append(peer.connections, conn)
+		case msg := <-broadcast:
 			log.Print("broadcast: ", msg)
+			for _, peer := range addr2peer {
+				for _, conn := range peer.connections {
+					err := binary.Write(conn, binary.LittleEndian, uint16(len(msg)))
+					if err != nil {
+						log.Print(err)
+					}
+					_, err = conn.Write(msg)
+					if err != nil {
+						log.Print(err)
+					}
+				}
+			}
 		}
 	}
 }
 
-func main () {
+func main() {
 	db, err := sql.Open("sqlite3", "dename.db")
 	if err != nil {
 		log.Fatal("Cannot open dename.db", err)
@@ -229,35 +244,35 @@ func main () {
 	}
 	addr2peer := make(map[string]*Peer)
 	broadcast := make(chan []byte)
-	peer_connected := make(chan net.Conn)
-	for i:=1; ; i++ { // i=0 is our server
+	peer_connected := make(chan *net.TCPConn)
+	for i := 1; ; i++ { // i=0 is our server
 		var host, pk_type, pk_b64 string
 		_, err := fmt.Fscanf(peersfile, "%s %s %s\n", &host, &pk_type, &pk_b64)
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			log.Fatal("Syntax error in peers.txt on line ",i, ":", err)
+			log.Fatal("Syntax error in peers.txt on line ", i, ":", err)
 		}
 		if pk_type != "sgp" {
-			log.Fatal("pk_type != sgp in peers.txt on line ",i)
+			log.Fatal("pk_type != sgp in peers.txt on line ", i)
 		}
 		pk_bytes, err := base64.StdEncoding.DecodeString(pk_b64)
 		if err != nil {
-			log.Fatal("Bad base64 in peers.txt on line ",i)
+			log.Fatal("Bad base64 in peers.txt on line ", i)
 		}
 		pk := &sgp.Entity{}
 		err = pk.Parse(pk_bytes)
 		if err != nil {
-			log.Fatal("Bad pk in peers.txt on line ",i," for ", host,": ", err)
+			log.Fatal("Bad pk in peers.txt on line ", i, " for ", host, ": ", err)
 		}
-		addr_struct, err := net.ResolveIPAddr("",host)
+		addr_struct, err := net.ResolveIPAddr("", host)
 		if err != nil {
 			log.Fatal("Cannot lookup ", host, err)
 		}
 		addr := addr_struct.String()
-		addr2peer[addr] = &Peer{index:i, addr:addr, pk:pk};
-		
+		addr2peer[addr] = &Peer{index: i, addr: addr, pk: pk}
+
 		_, err = db.Exec("INSERT OR IGNORE INTO servers(id) VALUES(?)", i)
 		if err != nil {
 			log.Fatal("Cannot insert server ", i, ": ", err)
@@ -266,13 +281,18 @@ func main () {
 	}
 	go handleAllPeers(addr2peer, broadcast, peer_connected)
 
-	peer_lnr, err := net.Listen("tcp", "0.0.0.0:6362")
+	our_server_tcpaddr, err := net.ResolveTCPAddr("tcp", "0.0.0.0:6362")
+	if err != nil {
+		log.Fatal(err)
+	}
+	peer_lnr, err := net.ListenTCP("tcp", our_server_tcpaddr)
 	if err != nil {
 		log.Fatal(err)
 	}
 	go func() {
 		for {
-			conn, _ := peer_lnr.Accept()
+			conn, _ := peer_lnr.AcceptTCP()
+			conn.SetNoDelay(false)
 			peer_connected <- conn
 		}
 	}()
