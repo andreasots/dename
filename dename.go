@@ -6,16 +6,15 @@ import (
 	"database/sql"
 	"encoding/base64"
 	// "encoding/binary"
+	"bytes"
 	"fmt"
-	"time"
 	_ "github.com/mattn/go-sqlite3"
 	"io"
 	"io/ioutil"
 	"log"
 	"net"
-	"strings"
-	"bytes"
 	"os"
+	"strings"
 
 	"code.google.com/p/goprotobuf/proto"
 	"github.com/andres-erbsen/sgp"
@@ -24,17 +23,16 @@ import (
 const S2S_PORT = "6362"
 
 type Dename struct {
-	db *sql.DB
-	our_sk sgp.SecretKey
-	our_index int
-	our_ip string
-	addr2peer map[string]*Peer
+	db             *sql.DB
+	our_sk         sgp.SecretKey
+	our_index      int
+	our_ip         string
+	addr2peer      map[string]*Peer
 	peer_broadcast chan []byte
 	peer_connected chan net.Conn
-	peer_lnr *net.TCPListener
-	client_lnr net.Listener
+	peer_lnr       *net.TCPListener
+	client_lnr     net.Listener
 }
-
 
 func (dn *Dename) CreateTables() {
 	db := dn.db
@@ -103,40 +101,6 @@ func (dn *Dename) CreateTables() {
 	if err != nil {
 		log.Fatal("Cannot create table name_mapping: ", err)
 	}
-
-	// our server
-	var ok int
-	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM servers)").Scan(&ok)
-	if err != nil {
-		log.Fatal("Cannot read table servers: ", err)
-	}
-	if ok == 0 {
-		_, err = db.Exec("INSERT OR REPLACE INTO servers(id) VALUES(?)", dn.our_index)
-		if err != nil {
-			log.Fatal("Cannot initialize table servers: ", err)
-		}
-	}
-
-	// first round and round key
-	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM round_keys)").Scan(&ok)
-	if err != nil {
-		log.Fatal("Cannot read table rounds: ", err)
-	}
-	if ok == 0 {
-		_, err = db.Exec("INSERT INTO rounds(id) VALUES(0)")
-		if err != nil {
-			log.Fatal("Cannot initialize table rounds: ", err)
-		}
-		var key [32]byte
-		_, err = io.ReadFull(rand.Reader, key[:])
-		if err != nil {
-			log.Fatal(err)
-		}
-		_, err = db.Exec("INSERT INTO round_keys(id,round,server,key) VALUES(0,0,0,?)", key[:])
-		if err != nil {
-			log.Fatal("Cannot initialize table round_keys: ", err)
-		}
-	}
 }
 
 func (dn *Dename) HandleClient(conn net.Conn) {
@@ -183,12 +147,12 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 	if !pk.Verify(signed_rq) {
 		return
 	}
-	log.Print("valid transfer of \"", string(new_mapping.Name),"\"")
+	log.Print("valid transfer of \"", string(new_mapping.Name), "\"")
 
 	// Look up the key we use to encrypt this round's queue messages
 	var key_slice []byte
 	var round int
-	err = db.QueryRow("SELECT round,key FROM round_keys WHERE server = 0 ORDER BY id DESC LIMIT 1;").Scan(&round, &key_slice)
+	err = db.QueryRow("SELECT round,key FROM round_keys WHERE server = ? ORDER BY id DESC LIMIT 1;", dn.our_index).Scan(&round, &key_slice)
 	if err != nil {
 		log.Fatal("Cannot get latest round key: ", err)
 	}
@@ -244,8 +208,8 @@ func (peer *Peer) ReceiveLoop() (err error) {
 		if err != nil {
 			conn.Close()
 			if err == io.EOF {
-			// the other end closed the connection, not us in HandleConnection
-			// FIXME: ensure thread-safety by a non-hack
+				// the other end closed the connection, not us in HandleConnection
+				// FIXME: ensure thread-safety by a non-hack
 				log.Print("peer: ", peer.addr, " connection lost: ", conn)
 				peer.conn = nil
 			}
@@ -257,7 +221,7 @@ func (peer *Peer) ReceiveLoop() (err error) {
 }
 
 func (peer *Peer) HandleConnection(our_pk_bytes []byte, conn net.Conn) error {
-	rport := strings.SplitN(conn.RemoteAddr().String(),":",2)[1]
+	rport := strings.SplitN(conn.RemoteAddr().String(), ":", 2)[1]
 	new_is_better := true
 	log.Print("peer: ", peer.addr, " old conn: ", peer.conn, " new: ", conn)
 	if peer.conn != nil {
@@ -268,7 +232,7 @@ func (peer *Peer) HandleConnection(our_pk_bytes []byte, conn net.Conn) error {
 			new_is_better = bytes.Compare(our_pk_bytes, peer.pk.Bytes) >= 0
 		}
 	}
-	if (!new_is_better) {
+	if !new_is_better {
 		return conn.Close()
 	}
 	if peer.conn != nil {
@@ -303,7 +267,7 @@ func (dn *Dename) HandleAllPeers() {
 	for {
 		select {
 		case conn := <-dn.peer_connected:
-			raddr := strings.SplitN(conn.RemoteAddr().String(),":",2)[0]
+			raddr := strings.SplitN(conn.RemoteAddr().String(), ":", 2)[0]
 			peer := dn.addr2peer[raddr]
 			if peer == nil {
 				log.Print(raddr, " is not our friend")
@@ -333,9 +297,10 @@ func (dn *Dename) HandleAllPeers() {
 func main() {
 	var err error
 	dn := &Dename{our_ip: "0.0.0.0",
-			addr2peer: make(map[string]*Peer),
-			peer_broadcast: make(chan []byte),
-			peer_connected: make(chan net.Conn, 100)}
+		our_index:      -1,
+		addr2peer:      make(map[string]*Peer),
+		peer_broadcast: make(chan []byte),
+		peer_connected: make(chan net.Conn, 100)}
 	if len(os.Args) >= 2 {
 		dn.our_ip = os.Args[1]
 	}
@@ -346,15 +311,18 @@ func main() {
 	defer dn.db.Close()
 	dn.CreateTables()
 
-	_, dn.our_sk, err = sgp.GenerateKey(rand.Reader, time.Now());
+	dn.our_sk, err = sgp.LoadSecretKeyFromFile("sk")
+	if err != nil {
+		log.Fatal("Cannot load secret key from \"sk\"", err)
+	}
 
 	peersfile, err := os.Open("peers.txt")
 	if err != nil {
 		log.Fatal("Cannot open peers.txt", err)
 	}
-	
-	 // TODO: "infinite size"
-	for i := 1; ; i++ { // i=0 is our server
+
+	// TODO: "infinite size"
+	for i := 0; ; i++ {
 		var host, pk_type, pk_b64 string
 		_, err := fmt.Fscanf(peersfile, "%s %s %s\n", &host, &pk_type, &pk_b64)
 		if err == io.EOF {
@@ -370,6 +338,7 @@ func main() {
 		if err != nil {
 			log.Fatal("Bad base64 in peers.txt on line ", i)
 		}
+
 		pk := &sgp.Entity{}
 		err = pk.Parse(pk_bytes)
 		if err != nil {
@@ -380,11 +349,16 @@ func main() {
 			log.Fatal("Cannot lookup ", host, err)
 		}
 		addr := addr_struct.String()
-		dn.addr2peer[addr] = &Peer{index: i, addr: addr, pk: pk} 
+		dn.addr2peer[addr] = &Peer{index: i, addr: addr, pk: pk}
 
 		_, err = dn.db.Exec("INSERT OR IGNORE INTO servers(id) VALUES(?)", i)
 		if err != nil {
 			log.Fatal("Cannot insert server ", i, ": ", err)
+		}
+
+		if bytes.Equal(dn.our_sk.Entity.Bytes, pk_bytes) { // this entry refers to us
+			dn.our_index = i
+			continue
 		}
 
 		// pick an ephermal port with the given ip as local address
@@ -406,6 +380,33 @@ func main() {
 			log.Print("connect to peer: ", err, laddr, raddr)
 		}
 	}
+
+	if dn.our_index == -1 {
+		log.Fatal("We are not on the peers list")
+	}
+
+	// first round and round key
+	ok := 0
+	err = dn.db.QueryRow("SELECT EXISTS(SELECT 1 FROM round_keys)").Scan(&ok)
+	if err != nil {
+		log.Fatal("Cannot read table rounds: ", err)
+	}
+	if ok == 0 {
+		_, err = dn.db.Exec("INSERT INTO rounds(id) VALUES(0)")
+		if err != nil {
+			log.Fatal("Cannot initialize table rounds: ", err)
+		}
+		var key [32]byte
+		_, err = io.ReadFull(rand.Reader, key[:])
+		if err != nil {
+			log.Fatal(err)
+		}
+		_, err = dn.db.Exec("INSERT INTO round_keys(id,round,server,key) VALUES(0,0,?,?)", dn.our_index, key[:])
+		if err != nil {
+			log.Fatal("Cannot initialize table round_keys: ", err)
+		}
+	}
+
 	go dn.HandleAllPeers()
 
 	our_server_tcpaddr, err := net.ResolveTCPAddr("tcp", dn.our_ip+":"+S2S_PORT)
