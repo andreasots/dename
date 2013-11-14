@@ -21,10 +21,23 @@ import (
 	"github.com/andres-erbsen/sgp"
 )
 
-const OUR_SERVER_ID = 0
 const S2S_PORT = "6362"
 
-func create_tables(db *sql.DB) {
+type Dename struct {
+	db *sql.DB
+	our_sk sgp.SecretKey
+	our_index int
+	our_ip string
+	addr2peer map[string]*Peer
+	peer_broadcast chan []byte
+	peer_connected chan net.Conn
+	peer_lnr *net.TCPListener
+	client_lnr net.Listener
+}
+
+
+func (dn *Dename) CreateTables() {
+	db := dn.db
 	_, err := db.Exec(`PRAGMA foreign_keys = ON;`)
 	if err != nil {
 		log.Fatal("Cannot PRAGMA foreign_keys = ON: ", err)
@@ -98,7 +111,7 @@ func create_tables(db *sql.DB) {
 		log.Fatal("Cannot read table servers: ", err)
 	}
 	if ok == 0 {
-		_, err = db.Exec("INSERT OR REPLACE INTO servers(id) VALUES(?)", OUR_SERVER_ID)
+		_, err = db.Exec("INSERT OR REPLACE INTO servers(id) VALUES(?)", dn.our_index)
 		if err != nil {
 			log.Fatal("Cannot initialize table servers: ", err)
 		}
@@ -126,7 +139,8 @@ func create_tables(db *sql.DB) {
 	}
 }
 
-func handleClient(db *sql.DB, peer_broadcast chan []byte, conn net.Conn) {
+func (dn *Dename) HandleClient(conn net.Conn) {
+	db := dn.db
 	defer conn.Close()
 	rq_bs, err := ioutil.ReadAll(conn)
 	if err != nil {
@@ -151,7 +165,6 @@ func handleClient(db *sql.DB, peer_broadcast chan []byte, conn net.Conn) {
 		return
 	}
 
-	fmt.Println(string(new_mapping.Name))
 	var pk_bytes []byte
 	pk := &sgp.Entity{}
 	err = db.QueryRow("SELECT pubkey FROM name_mapping WHERE name = ?", new_mapping.Name).Scan(&pk_bytes)
@@ -181,7 +194,6 @@ func handleClient(db *sql.DB, peer_broadcast chan []byte, conn net.Conn) {
 	}
 	key := new([32]byte)
 	copy(key[:], key_slice)
-	log.Print("Adding to round", round)
 
 	nonce := new([24]byte)
 	_, err = io.ReadFull(rand.Reader, nonce[:])
@@ -193,14 +205,12 @@ func handleClient(db *sql.DB, peer_broadcast chan []byte, conn net.Conn) {
 	rq_box = secretbox.Seal(rq_box[:0], rq_bs, nonce, key)
 	rq_box = append(rq_box, nonce[:]...)
 	_, err = db.Exec("INSERT INTO transaction_queue(round,introducer,request) VALUES(?,?,?);",
-		round, OUR_SERVER_ID, rq_box)
+		round, dn.our_index, rq_box)
 	if err != nil {
-		log.Print(round, OUR_SERVER_ID, rq_box)
+		log.Print(round, dn.our_index, rq_box)
 		log.Fatal("Cannot insert new transaction to queue: ", err)
 	}
-	log.Print("Adding to broadcast queue")
-	peer_broadcast <- append([]byte{1}, rq_box...)
-	log.Print("Added to broadcast queue")
+	dn.peer_broadcast <- append([]byte{1}, rq_box...)
 }
 
 type Peer struct {
@@ -211,7 +221,7 @@ type Peer struct {
 }
 
 func (peer *Peer) HandleMessage(msg []byte) (err error) {
-	log.Print("Received", len(msg), "bytes from ", peer.addr)
+	log.Print("Received ", len(msg), " bytes from ", peer.addr)
 	return nil
 }
 
@@ -225,16 +235,19 @@ func (peer *Peer) ReceiveLoop() (err error) {
 		buf := make([]byte, 1600)
 		for err == nil && n < sz {
 			nn, err = conn.Read(buf[n:sz])
-			log.Print("Read ", nn, " bytes from ", peer.addr)
+			// log.Print("Read ", nn, " bytes from ", peer.addr)
 			n += nn
 			if n == 2 {
 				sz = 2 + (int(buf[0]) | (int(buf[1]) << 8))
 			}
 		}
 		if err != nil {
-			if err == io.EOF { // the other side closed the connection, not us
-				conn.Close()
-				peer.conn = nil // FIXME: is it concurrency-safe?
+			conn.Close()
+			if err == io.EOF {
+			// the other end closed the connection, not us in HandleConnection
+			// FIXME: ensure thread-safety by a non-hack
+				log.Print("peer: ", peer.addr, " connection lost: ", conn)
+				peer.conn = nil
 			}
 			return err
 		}
@@ -246,6 +259,7 @@ func (peer *Peer) ReceiveLoop() (err error) {
 func (peer *Peer) HandleConnection(our_pk_bytes []byte, conn net.Conn) error {
 	rport := strings.SplitN(conn.RemoteAddr().String(),":",2)[1]
 	new_is_better := true
+	log.Print("peer: ", peer.addr, " old conn: ", peer.conn, " new: ", conn)
 	if peer.conn != nil {
 		// keep the connection where the client has the lower pk
 		if rport == S2S_PORT {
@@ -265,21 +279,40 @@ func (peer *Peer) HandleConnection(our_pk_bytes []byte, conn net.Conn) error {
 	return nil
 }
 
-func handleAllPeers(our_pk *sgp.Entity, addr2peer map[string]*Peer, broadcast chan []byte, peer_connected chan net.Conn) {
+func (dn *Dename) ListenForPeers() {
+	for {
+		conn, err := dn.peer_lnr.AcceptTCP()
+		if err == nil {
+			conn.SetNoDelay(false)
+			// TODO: create a new goroutine that sends all the old updates and blocks, only then add to the set of normal peers
+			dn.peer_connected <- conn
+		} else {
+			log.Print(err)
+		}
+	}
+}
+
+func (dn *Dename) ListenForClients() {
+	for {
+		conn, _ := dn.client_lnr.Accept()
+		go dn.HandleClient(conn)
+	}
+}
+
+func (dn *Dename) HandleAllPeers() {
 	for {
 		select {
-		case conn := <-peer_connected:
-			log.Print("peer connected: ", conn)
+		case conn := <-dn.peer_connected:
 			raddr := strings.SplitN(conn.RemoteAddr().String(),":",2)[0]
-			peer := addr2peer[raddr]
+			peer := dn.addr2peer[raddr]
 			if peer == nil {
 				log.Print(raddr, " is not our friend")
 				continue
 			}
-			peer.HandleConnection(our_pk.Bytes, conn)
-		case msg := <-broadcast:
+			peer.HandleConnection(dn.our_sk.Entity.Bytes, conn)
+		case msg := <-dn.peer_broadcast:
 			log.Print("broadcast ", len(msg), " bytes")
-			for _, peer := range addr2peer {
+			for _, peer := range dn.addr2peer {
 				conn := peer.conn
 				if conn == nil {
 					continue
@@ -298,29 +331,29 @@ func handleAllPeers(our_pk *sgp.Entity, addr2peer map[string]*Peer, broadcast ch
 }
 
 func main() {
-	var ourip string
-	if len(os.Args) == 1 {
-		ourip = "0.0.0.0"
-	} else {
-		ourip = os.Args[1]
+	var err error
+	dn := &Dename{our_ip: "0.0.0.0",
+			addr2peer: make(map[string]*Peer),
+			peer_broadcast: make(chan []byte),
+			peer_connected: make(chan net.Conn, 100)}
+	if len(os.Args) >= 2 {
+		dn.our_ip = os.Args[1]
 	}
-	db, err := sql.Open("sqlite3", "dename.db")
+	dn.db, err = sql.Open("sqlite3", "dename.db")
 	if err != nil {
 		log.Fatal("Cannot open dename.db", err)
 	}
-	defer db.Close()
+	defer dn.db.Close()
+	dn.CreateTables()
 
-	create_tables(db)
-
-	our_pk, _, err := sgp.GenerateKey(rand.Reader, time.Now());
+	_, dn.our_sk, err = sgp.GenerateKey(rand.Reader, time.Now());
 
 	peersfile, err := os.Open("peers.txt")
 	if err != nil {
 		log.Fatal("Cannot open peers.txt", err)
 	}
-	addr2peer := make(map[string]*Peer)
-	broadcast := make(chan []byte)
-	peer_connected := make(chan net.Conn, 100) // TODO: "infinite size"
+	
+	 // TODO: "infinite size"
 	for i := 1; ; i++ { // i=0 is our server
 		var host, pk_type, pk_b64 string
 		_, err := fmt.Fscanf(peersfile, "%s %s %s\n", &host, &pk_type, &pk_b64)
@@ -347,15 +380,15 @@ func main() {
 			log.Fatal("Cannot lookup ", host, err)
 		}
 		addr := addr_struct.String()
-		addr2peer[addr] = &Peer{index: i, addr: addr, pk: pk} 
+		dn.addr2peer[addr] = &Peer{index: i, addr: addr, pk: pk} 
 
-		_, err = db.Exec("INSERT OR IGNORE INTO servers(id) VALUES(?)", i)
+		_, err = dn.db.Exec("INSERT OR IGNORE INTO servers(id) VALUES(?)", i)
 		if err != nil {
 			log.Fatal("Cannot insert server ", i, ": ", err)
 		}
 
 		// pick an ephermal port with the given ip as local address
-		laddr_ip, err := net.ResolveIPAddr("", ourip)
+		laddr_ip, err := net.ResolveIPAddr("", dn.our_ip)
 		if err != nil {
 			log.Fatal("resolve our ip: ", err)
 		}
@@ -368,40 +401,26 @@ func main() {
 		conn, err := net.DialTCP("tcp", laddr, raddr)
 		if err == nil {
 			conn.SetNoDelay(false)
-			peer_connected <- conn
+			dn.peer_connected <- conn
 		} else {
 			log.Print("connect to peer: ", err, laddr, raddr)
 		}
 	}
-	go handleAllPeers(our_pk, addr2peer, broadcast, peer_connected)
+	go dn.HandleAllPeers()
 
-	our_server_tcpaddr, err := net.ResolveTCPAddr("tcp", ourip+":"+S2S_PORT)
+	our_server_tcpaddr, err := net.ResolveTCPAddr("tcp", dn.our_ip+":"+S2S_PORT)
 	if err != nil {
 		log.Fatal(err)
 	}
-	peer_lnr, err := net.ListenTCP("tcp", our_server_tcpaddr)
+	dn.peer_lnr, err = net.ListenTCP("tcp", our_server_tcpaddr)
 	if err != nil {
 		log.Fatal(err)
 	}
-	go func() {
-		for {
-			conn, err := peer_lnr.AcceptTCP()
-			if err == nil {
-				conn.SetNoDelay(false)
-				// TODO: create a new goroutine that sends all the old updates and blocks, only then add to the set of normal peers
-				peer_connected <- conn
-			} else {
-				log.Print(err)
-			}
-		}
-	}()
+	go dn.ListenForPeers()
 
-	client_lnr, err := net.Listen("tcp", ourip+":6263")
+	dn.client_lnr, err = net.Listen("tcp", dn.our_ip+":6263")
 	if err != nil {
 		log.Fatal(err)
 	}
-	for {
-		conn, _ := client_lnr.Accept()
-		go handleClient(db, broadcast, conn)
-	}
+	dn.ListenForClients()
 }
