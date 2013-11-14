@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
-	"encoding/binary"
+	// "encoding/binary"
 	"fmt"
 	"time"
 	_ "github.com/mattn/go-sqlite3"
@@ -210,12 +210,27 @@ type Peer struct {
 	conn  net.Conn
 }
 
+func (peer *Peer) HandleMessage(msg []byte) (err error) {
+	log.Print("Received", len(msg), "bytes from ", peer.addr)
+	return nil
+}
 
-func (peer *Peer) ReceiveLoop() error {
+func (peer *Peer) ReceiveLoop() (err error) {
 	conn := peer.conn
-	buf := make([]byte, 1600)
 	for {
-		_, err := conn.Read(buf)
+		err = nil
+		sz := 2
+		n := 0
+		nn := 0
+		buf := make([]byte, 1600)
+		for err == nil && n < sz {
+			nn, err = conn.Read(buf[n:sz])
+			log.Print("Read ", nn, " bytes from ", peer.addr)
+			n += nn
+			if n == 2 {
+				sz = 2 + (int(buf[0]) | (int(buf[1]) << 8))
+			}
+		}
 		if err != nil {
 			if err == io.EOF { // the other side closed the connection, not us
 				conn.Close()
@@ -223,6 +238,7 @@ func (peer *Peer) ReceiveLoop() error {
 			}
 			return err
 		}
+		go peer.HandleMessage(buf[2:sz])
 	}
 	return nil
 }
@@ -262,18 +278,17 @@ func handleAllPeers(our_pk *sgp.Entity, addr2peer map[string]*Peer, broadcast ch
 			}
 			peer.HandleConnection(our_pk.Bytes, conn)
 		case msg := <-broadcast:
-			log.Print("broadcast: ", msg)
+			log.Print("broadcast ", len(msg), " bytes")
 			for _, peer := range addr2peer {
-				log.Print(addr2peer, peer)
-				if peer.conn == nil {
+				conn := peer.conn
+				if conn == nil {
 					continue
 				}
-				log.Print("broadcasting to ", peer.addr)
-				err := binary.Write(peer.conn, binary.LittleEndian, uint16(len(msg)))
-				if err != nil {
-					log.Print(err)
-				}
-				_, err = peer.conn.Write(msg)
+				buf := make([]byte, 2+len(msg))
+				buf[0] = byte(len(msg) & 0x00ff)
+				buf[1] = byte((len(msg) >> 8) & 0xff)
+				copy(buf[2:], msg)
+				_, err := conn.Write(buf)
 				if err != nil {
 					log.Print(err)
 				}
