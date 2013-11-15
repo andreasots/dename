@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
-	// "encoding/binary"
+	"time"
 	"bytes"
 	"fmt"
 	_ "github.com/mattn/go-sqlite3"
@@ -20,6 +20,7 @@ import (
 	"github.com/andres-erbsen/sgp"
 )
 
+const TICK_INTERVAL = 10*time.Second
 const S2S_PORT = "6362"
 
 type Dename struct {
@@ -184,12 +185,18 @@ type Peer struct {
 	conn  net.Conn
 }
 
-func (peer *Peer) HandleMessage(msg []byte) (err error) {
+func (dn *Dename) HandleMessage(peer *Peer, msg []byte) (err error) {
 	log.Print("Received ", len(msg), " bytes from ", peer.addr)
+	if msg[0] == 1 {
+		_, err = dn.db.Exec("INSERT INTO transaction_queue(round,introducer,request) VALUES(?,?,?);", round, peer.index, msg[1:])
+		if err != nil {
+			log.Fatal("Cannot insert new transaction to queue: ", err)
+		}
+	}
 	return nil
 }
 
-func (peer *Peer) ReceiveLoop() (err error) {
+func (dn *Dename) ReceiveLoop(peer *Peer) (err error) {
 	conn := peer.conn
 	for {
 		err = nil
@@ -215,21 +222,21 @@ func (peer *Peer) ReceiveLoop() (err error) {
 			}
 			return err
 		}
-		go peer.HandleMessage(buf[2:sz])
+		go dn.HandleMessage(peer, buf[2:sz])
 	}
 	return nil
 }
 
-func (peer *Peer) HandleConnection(our_pk_bytes []byte, conn net.Conn) error {
+func (dn *Dename) HandleConnection(peer *Peer, conn net.Conn) error {
 	rport := strings.SplitN(conn.RemoteAddr().String(), ":", 2)[1]
 	new_is_better := true
 	log.Print("peer: ", peer.addr, " old conn: ", peer.conn, " new: ", conn)
 	if peer.conn != nil {
 		// keep the connection where the client has the lower pk
 		if rport == S2S_PORT {
-			new_is_better = bytes.Compare(our_pk_bytes, peer.pk.Bytes) < 0
+			new_is_better = bytes.Compare(dn.our_sk.Entity.Bytes, peer.pk.Bytes) < 0
 		} else { // they started the new connection
-			new_is_better = bytes.Compare(our_pk_bytes, peer.pk.Bytes) >= 0
+			new_is_better = bytes.Compare(dn.our_sk.Entity.Bytes, peer.pk.Bytes) >= 0
 		}
 	}
 	if !new_is_better {
@@ -239,7 +246,7 @@ func (peer *Peer) HandleConnection(our_pk_bytes []byte, conn net.Conn) error {
 		peer.conn.Close() // kills the old ReceiveLoop with errClosed (not EOF)
 	}
 	peer.conn = conn
-	go peer.ReceiveLoop()
+	go dn.ReceiveLoop(peer)
 	return nil
 }
 
@@ -273,7 +280,7 @@ func (dn *Dename) HandleAllPeers() {
 				log.Print(raddr, " is not our friend")
 				continue
 			}
-			peer.HandleConnection(dn.our_sk.Entity.Bytes, conn)
+			dn.HandleConnection(peer, conn)
 		case msg := <-dn.peer_broadcast:
 			log.Print("broadcast ", len(msg), " bytes")
 			for _, peer := range dn.addr2peer {
@@ -291,6 +298,30 @@ func (dn *Dename) HandleAllPeers() {
 				}
 			}
 		}
+	}
+}
+
+func (dn *Dename) Tick() (err error) {
+	var key_slice []byte
+	var round int
+	err = dn.db.QueryRow("SELECT round,key FROM round_keys WHERE server = ? ORDER BY id DESC LIMIT 1;", dn.our_index).Scan(&round, &key_slice)
+	if err != nil {
+		log.Fatal("Cannot get latest round key: ", err)
+	}
+	dn.peer_broadcast <- append([]byte{2}, key_slice...)
+	return nil
+}
+
+func (dn *Dename) WaitForTicks() {
+	var planned_next time.Time
+	for {
+		t := time.Now()
+		next := t.Add(TICK_INTERVAL).Truncate(TICK_INTERVAL)
+		if next != planned_next { // `planned_next` just passed
+			go dn.Tick()
+		}
+		planned_next = next
+		time.Sleep(planned_next.Sub(t))		
 	}
 }
 
