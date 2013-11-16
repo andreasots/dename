@@ -20,7 +20,7 @@ import (
 	"github.com/andres-erbsen/sgp"
 )
 
-const TICK_INTERVAL = 10*time.Second
+const TICK_INTERVAL = 2*time.Second
 const S2S_PORT = "6362"
 
 type Dename struct {
@@ -51,7 +51,8 @@ func (dn *Dename) CreateTables() {
 
 	// rounds
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS rounds (
-		id integer not null primary key);`)
+		id integer not null primary key,
+		end_time integer not null);`)
 	if err != nil {
 		log.Fatal("Cannot create table rounds: ", err)
 	}
@@ -188,7 +189,7 @@ type Peer struct {
 func (dn *Dename) HandleMessage(peer *Peer, msg []byte) (err error) {
 	log.Print("Received ", len(msg), " bytes from ", peer.addr)
 	if msg[0] == 1 {
-		_, err = dn.db.Exec("INSERT INTO transaction_queue(round,introducer,request) VALUES(?,?,?);", round, peer.index, msg[1:])
+		_, err = dn.db.Exec("INSERT INTO transaction_queue(round,introducer,request) SELECT MAX(id),?,? FROM rounds;", peer.index, msg[1:])
 		if err != nil {
 			log.Fatal("Cannot insert new transaction to queue: ", err)
 		}
@@ -301,31 +302,49 @@ func (dn *Dename) HandleAllPeers() {
 	}
 }
 
-func (dn *Dename) Tick() (err error) {
-	var key_slice []byte
-	var round int
-	err = dn.db.QueryRow("SELECT round,key FROM round_keys WHERE server = ? ORDER BY id DESC LIMIT 1;", dn.our_index).Scan(&round, &key_slice)
-	if err != nil {
-		log.Fatal("Cannot get latest round key: ", err)
-	}
-	dn.peer_broadcast <- append([]byte{2}, key_slice...)
-	return nil
+func (dn *Dename) Tick(round int) {
+	log.Print("Round ", round, " ended")
 }
 
-func (dn *Dename) WaitForTicks() {
-	var planned_next time.Time
+func (dn *Dename) GenerateRoundKey(round int) (err error) {
+	var key [32]byte
+	_, err = io.ReadFull(rand.Reader, key[:])
+	if err != nil {
+		return
+	}
+	_, err = dn.db.Exec("INSERT INTO round_keys(round,server,key) VALUES(?,?,?)", round, dn.our_index, key[:])
+	if err != nil {
+		return
+	}
+	return
+}
+
+
+func (dn *Dename) WaitForTicks(round int, end time.Time) (err error) {
 	for {
-		t := time.Now()
-		next := t.Add(TICK_INTERVAL).Truncate(TICK_INTERVAL)
-		if next != planned_next { // `planned_next` just passed
-			go dn.Tick()
+		log.Print(round, time.Now().Second(), end.Second())
+		if time.Now().After(end) {
+			go dn.Tick(round)
+			end = end.Add(TICK_INTERVAL)
+			round += 1
+			_, err = dn.db.Exec("INSERT INTO rounds(id, end_time) VALUES(?,?)", round, end.Unix())
+			if err != nil {
+				log.Fatal("Cannot insert to table rounds: ", err)
+			}
+			err = dn.GenerateRoundKey(round)
+			if err != nil {
+				log.Fatal("Cannot add a new round key: ", err)
+			}
 		}
-		planned_next = next
-		time.Sleep(planned_next.Sub(t))		
+		time.Sleep(end.Sub(time.Now()))
 	}
 }
 
 func main() {
+	if len(os.Args) != 1 && len(os.Args) != 2 {
+		log.Fatal("USAGE: ",os.Args[0], " [listen port]")
+	}
+
 	var err error
 	dn := &Dename{our_ip: "0.0.0.0",
 		our_index:      -1,
@@ -352,7 +371,6 @@ func main() {
 		log.Fatal("Cannot open peers.txt", err)
 	}
 
-	// TODO: "infinite size"
 	for i := 0; ; i++ {
 		var host, pk_type, pk_b64 string
 		_, err := fmt.Fscanf(peersfile, "%s %s %s\n", &host, &pk_type, &pk_b64)
@@ -416,27 +434,14 @@ func main() {
 		log.Fatal("We are not on the peers list")
 	}
 
-	// first round and round key
-	ok := 0
-	err = dn.db.QueryRow("SELECT EXISTS(SELECT 1 FROM round_keys)").Scan(&ok)
-	if err != nil {
+	round := -1 // -1 is a dummy round before the beginning of time.
+	round_end_u := time.Now().Add(2*TICK_INTERVAL).Truncate(TICK_INTERVAL).Unix()
+	err = dn.db.QueryRow("SELECT id,end_time FROM rounds ORDER BY id DESC LIMIT 1").Scan(&round, &round_end_u)
+	if err != nil && err != sql.ErrNoRows {
 		log.Fatal("Cannot read table rounds: ", err)
 	}
-	if ok == 0 {
-		_, err = dn.db.Exec("INSERT INTO rounds(id) VALUES(0)")
-		if err != nil {
-			log.Fatal("Cannot initialize table rounds: ", err)
-		}
-		var key [32]byte
-		_, err = io.ReadFull(rand.Reader, key[:])
-		if err != nil {
-			log.Fatal(err)
-		}
-		_, err = dn.db.Exec("INSERT INTO round_keys(id,round,server,key) VALUES(0,0,?,?)", dn.our_index, key[:])
-		if err != nil {
-			log.Fatal("Cannot initialize table round_keys: ", err)
-		}
-	}
+	round_end := time.Unix(round_end_u,0)
+	dn.WaitForTicks(round, round_end)
 
 	go dn.HandleAllPeers()
 
@@ -450,6 +455,9 @@ func main() {
 	}
 	go dn.ListenForPeers()
 
+	if round == -1 { // wait for the dummy round to end before accepting clients
+		time.Sleep(time.Now().Sub(round_end))
+	}
 	dn.client_lnr, err = net.Listen("tcp", dn.our_ip+":6263")
 	if err != nil {
 		log.Fatal(err)
