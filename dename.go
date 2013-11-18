@@ -3,6 +3,7 @@ package dename
 import (
 	"code.google.com/p/go.crypto/nacl/secretbox"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"time"
@@ -193,6 +194,9 @@ func (dn *Dename) HandleMessage(peer *Peer, msg []byte) (err error) {
 		if err != nil {
 			log.Fatal("Cannot insert new transaction to queue: ", err)
 		}
+	} else if msg[0] == 1 {
+	} else {
+		log.Print("Unknown message of type ", msg[0]," from ", peer.index)
 	}
 	return nil
 }
@@ -318,24 +322,39 @@ func (dn *Dename) ReadQueue(round int) *Queue {
 		}
 		Q.Entries = append(Q.Entries, transaction)
 	}
-	Q.Time = new(int64)
-	*Q.Time = time.Now().Unix()
 	return Q
+}
+
+func QueueToCommitdata(Q *Queue) (cdata []byte, err error) {
+	Q_bytes, err := proto.Marshal(Q)
+	if err != nil {
+		return
+	}
+	h := sha256.New()
+	_, err = h.Write(Q_bytes)
+	if err != nil {
+		return
+	}
+	C := &Commitment{Round: Q.Round, Server: Q.Server, QueueHash: h.Sum(nil)}
+	cdata, err = proto.Marshal(C)
+	if err != nil {
+		cdata = nil
+	}
+	return
 }
 
 func (dn *Dename) Tick(round int) {
 	log.Print("Round ", round, " ended")
 	// commit to the current queue
 	Q := dn.ReadQueue(round)
-	Q_bytes, err := proto.Marshal(Q)
-	if err != nil {
-		log.Fatal("Serialize queue: ", err)
-	}
-	commitment := dn.our_sk.Sign(append([]byte("COMM"), Q_bytes...))
-	commitment.Message = []byte{}
-	commitment_bytes, err := proto.Marshal(commitment)
+	commitdata_bytes, err := QueueToCommitdata(Q)
 	if err != nil {
 		log.Fatal("Serialize commitment: ", err)
+	}
+	commitment := dn.our_sk.Sign(append([]byte("COMM"), commitdata_bytes...))
+	commitment_bytes, err := proto.Marshal(commitment)
+	if err != nil {
+		log.Fatal("Serialize signed commitment: ", err)
 	}
 	ack := dn.our_sk.Sign(append([]byte("ACKN"), commitment_bytes...))
 	ack_bytes, err := proto.Marshal(ack)
@@ -346,7 +365,7 @@ func (dn *Dename) Tick(round int) {
 	if err != nil {
 		log.Fatal("Insert our commitment: ", err)
 	}
-	dn.peer_broadcast <- commitment_bytes
+	dn.peer_broadcast <- append([]byte{2}, commitment_bytes...)
 }
 
 func (dn *Dename) GenerateRoundKey(round int) (err error) {
