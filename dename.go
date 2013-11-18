@@ -1,4 +1,4 @@
-package main
+package dename
 
 import (
 	"code.google.com/p/go.crypto/nacl/secretbox"
@@ -302,8 +302,51 @@ func (dn *Dename) HandleAllPeers() {
 	}
 }
 
+func (dn *Dename) ReadQueue(round int) *Queue {
+	round_, server_ := int64(round), int64(dn.our_index)
+	Q := &Queue{Round: &round_, Server: &server_, Entries: make([][]byte,1)}
+	rows, err := dn.db.Query("SELECT request FROM transaction_queue WHERE round = ? AND introducer = ? ORDER BY id", round, dn.our_index)
+	if err != nil {
+        log.Fatal("Cannot load transactions for tick: ", err)
+    }
+	defer rows.Close()
+	var transaction []byte
+	for rows.Next() {
+		err := rows.Scan(&transaction)
+		if err != nil {
+			log.Fatal("Cannot load transaction for tick: ", err)
+		}
+		Q.Entries = append(Q.Entries, transaction)
+	}
+	Q.Time = new(int64)
+	*Q.Time = time.Now().Unix()
+	return Q
+}
+
 func (dn *Dename) Tick(round int) {
 	log.Print("Round ", round, " ended")
+	// commit to the current queue
+	Q := dn.ReadQueue(round)
+	Q_bytes, err := proto.Marshal(Q)
+	if err != nil {
+		log.Fatal("Serialize queue: ", err)
+	}
+	commitment := dn.our_sk.Sign(append([]byte("COMM"), Q_bytes...))
+	commitment.Message = []byte{}
+	commitment_bytes, err := proto.Marshal(commitment)
+	if err != nil {
+		log.Fatal("Serialize commitment: ", err)
+	}
+	ack := dn.our_sk.Sign(append([]byte("ACKN"), commitment_bytes...))
+	ack_bytes, err := proto.Marshal(ack)
+	if err != nil {
+		log.Fatal("Serialize ack: ", err)
+	}
+	_, err = dn.db.Exec("INSERT INTO commitments(round,commiter,acknowledger,signature) VALUES(?,?,?,?)", round, dn.our_index, dn.our_index, ack_bytes)
+	if err != nil {
+		log.Fatal("Insert our commitment: ", err)
+	}
+	dn.peer_broadcast <- commitment_bytes
 }
 
 func (dn *Dename) GenerateRoundKey(round int) (err error) {
@@ -324,7 +367,6 @@ func (dn *Dename) WaitForTicks(round int, end time.Time) (err error) {
 	for {
 		log.Print(round, time.Now().Second(), end.Second())
 		if time.Now().After(end) {
-			go dn.Tick(round)
 			end = end.Add(TICK_INTERVAL)
 			round += 1
 			_, err = dn.db.Exec("INSERT INTO rounds(id, end_time) VALUES(?,?)", round, end.Unix())
@@ -334,6 +376,7 @@ func (dn *Dename) WaitForTicks(round int, end time.Time) (err error) {
 			err = dn.GenerateRoundKey(round)
 			if err != nil {
 				log.Fatal("Cannot add a new round key: ", err)
+			go dn.Tick(round-1)
 			}
 		}
 		time.Sleep(end.Sub(time.Now()))
