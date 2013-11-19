@@ -368,16 +368,27 @@ func (dn *Dename) Tick(round int) {
 	dn.peer_broadcast <- append([]byte{2}, commitment_bytes...)
 }
 
-func (dn *Dename) GenerateRoundKey(round int) (err error) {
+func (dn *Dename) NextRound(round int, end time.Time) (err error) {
 	var key [32]byte
 	_, err = io.ReadFull(rand.Reader, key[:])
 	if err != nil {
 		return
 	}
-	_, err = dn.db.Exec("INSERT INTO round_keys(round,server,key) VALUES(?,?,?)", round, dn.our_index, key[:])
+	tx, err := dn.db.Begin()
 	if err != nil {
 		return
 	}
+	_, err = tx.Exec("INSERT INTO rounds(id, end_time) VALUES(?,?)", round, end.Unix())
+	if err != nil {
+		tx.Rollback()
+		log.Fatal("Cannot insert to table rounds: ", err)
+	}
+	_, err = tx.Exec("INSERT INTO round_keys(round,server,key) VALUES(?,?,?)", round, dn.our_index, key[:])
+	if err != nil {
+		tx.Rollback()
+		return
+	}
+	tx.Commit()
 	return
 }
 
@@ -387,16 +398,13 @@ func (dn *Dename) WaitForTicks(round int, end time.Time) (err error) {
 		log.Print(round, time.Now().Second(), end.Second())
 		if time.Now().After(end) {
 			end = end.Add(TICK_INTERVAL)
-			round += 1
-			_, err = dn.db.Exec("INSERT INTO rounds(id, end_time) VALUES(?,?)", round, end.Unix())
+			round++
+			// switch new requests to the new round first, then finalize the old
+			err = dn.NextRound(round, end)
 			if err != nil {
-				log.Fatal("Cannot insert to table rounds: ", err)
+				log.Fatal("Cannot advance round: ", err)
 			}
-			err = dn.GenerateRoundKey(round)
-			if err != nil {
-				log.Fatal("Cannot add a new round key: ", err)
-			go dn.Tick(round-1)
-			}
+			dn.Tick(round-1)
 		}
 		time.Sleep(end.Sub(time.Now()))
 	}
