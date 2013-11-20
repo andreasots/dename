@@ -1,4 +1,4 @@
-package dename
+package main
 
 import (
 	"code.google.com/p/go.crypto/nacl/secretbox"
@@ -16,6 +16,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"errors"
 
 	"code.google.com/p/goprotobuf/proto"
 	"github.com/andres-erbsen/sgp"
@@ -29,6 +30,7 @@ type Dename struct {
 	our_sk         sgp.SecretKey
 	our_index      int
 	our_ip         string
+	peers          map[int]*Peer
 	addr2peer      map[string]*Peer
 	peer_broadcast chan []byte
 	peer_connected chan net.Conn
@@ -147,7 +149,7 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 		log.Fatal(err) // FIXME: check error type
 	}
 
-	if !pk.Verify(signed_rq) {
+	if !pk.VerifyPb(signed_rq) {
 		return
 	}
 	log.Print("valid transfer of \"", string(new_mapping.Name), "\"")
@@ -187,50 +189,6 @@ type Peer struct {
 	conn  net.Conn
 }
 
-func (dn *Dename) HandleMessage(peer *Peer, msg []byte) (err error) {
-	log.Print("Received ", len(msg), " bytes from ", peer.addr)
-	if msg[0] == 1 {
-		_, err = dn.db.Exec("INSERT INTO transaction_queue(round,introducer,request) SELECT MAX(id),?,? FROM rounds;", peer.index, msg[1:])
-		if err != nil {
-			log.Fatal("Cannot insert new transaction to queue: ", err)
-		}
-	} else if msg[0] == 1 {
-	} else {
-		log.Print("Unknown message of type ", msg[0]," from ", peer.index)
-	}
-	return nil
-}
-
-func (dn *Dename) ReceiveLoop(peer *Peer) (err error) {
-	conn := peer.conn
-	for {
-		err = nil
-		sz := 2
-		n := 0
-		nn := 0
-		buf := make([]byte, 1600)
-		for err == nil && n < sz {
-			nn, err = conn.Read(buf[n:sz])
-			// log.Print("Read ", nn, " bytes from ", peer.addr)
-			n += nn
-			if n == 2 {
-				sz = 2 + (int(buf[0]) | (int(buf[1]) << 8))
-			}
-		}
-		if err != nil {
-			conn.Close()
-			if err == io.EOF {
-				// the other end closed the connection, not us in HandleConnection
-				// FIXME: ensure thread-safety by a non-hack
-				log.Print("peer: ", peer.addr, " connection lost: ", conn)
-				peer.conn = nil
-			}
-			return err
-		}
-		go dn.HandleMessage(peer, buf[2:sz])
-	}
-	return nil
-}
 
 func (dn *Dename) HandleConnection(peer *Peer, conn net.Conn) error {
 	rport := strings.SplitN(conn.RemoteAddr().String(), ":", 2)[1]
@@ -275,6 +233,37 @@ func (dn *Dename) ListenForClients() {
 	}
 }
 
+func (dn *Dename) ReceiveLoop(peer *Peer) (err error) {
+	conn := peer.conn
+	for {
+		err = nil
+		sz := 2
+		n := 0
+		nn := 0
+		buf := make([]byte, 1600)
+		for err == nil && n < sz {
+			nn, err = conn.Read(buf[n:sz])
+			// log.Print("Read ", nn, " bytes from ", peer.addr)
+			n += nn
+			if n == 2 {
+				sz = 2 + (int(buf[0]) | (int(buf[1]) << 8))
+			}
+		}
+		if err != nil {
+			conn.Close()
+			if err == io.EOF {
+				// the other end closed the connection, not us in HandleConnection
+				// FIXME: ensure thread-safety by a non-hack
+				log.Print("peer: ", peer.addr, " connection lost: ", conn)
+				peer.conn = nil
+			}
+			return err
+		}
+		go dn.HandleMessage(peer, buf[2:sz])
+	}
+	return nil
+}
+
 func (dn *Dename) HandleAllPeers() {
 	for {
 		select {
@@ -304,6 +293,162 @@ func (dn *Dename) HandleAllPeers() {
 			}
 		}
 	}
+}
+
+
+func (dn *Dename) HandleMessage(peer *Peer, msg []byte) (err error) {
+	log.Print("Received ", len(msg), " bytes from ", peer.addr)
+	if msg[0] == 1 {
+		_, err = dn.db.Exec("INSERT INTO transaction_queue(round,introducer,request) SELECT MAX(id),?,? FROM rounds;", peer.index, msg[1:])
+		if err != nil {
+			log.Fatal("Cannot insert new transaction to queue: ", err)
+		}
+	} else if msg[0] == 2 {
+		go dn.HandleCommitment(peer, msg[1:])
+	} else if msg[0] == 3 {
+		go dn.HandleAck(peer, msg[1:])
+	} else {
+		log.Print("Unknown message of type ", msg[0]," from ", peer.index)
+	}
+	return
+}
+
+
+func (dn *Dename) HandleCommitment(peer *Peer, signed_commitment []byte) (err error) {
+	commitment, err := peer.pk.Verify(signed_commitment)
+	if err != nil {
+		return
+	}
+	if string(commitment[:4]) != "COMM" {
+		return errors.New("Bad tag on commitment")
+	}
+	cd := &Commitment{}
+	err = proto.Unmarshal(commitment[4:], cd); if err != nil {
+		return
+	}
+	if *cd.Server != int64(peer.index) {
+		return errors.New("Bad server id commitment")
+	}
+	ack:= dn.our_sk.Sign(append([]byte("ACKN"), signed_commitment...))
+	_, err = dn.db.Exec(`INSERT INTO
+			commitments(round,commiter,acknowledger,signature)
+			VALUES(?,?,?,?)`,
+			cd.Round, peer.index, dn.our_index, ack); if err != nil {
+		return
+	}
+	dn.peer_broadcast <- append([]byte{3}, ack...)
+	return nil
+}
+
+func (dn *Dename) UnpackAckCommitment(c, a int, signed_ack_bs []byte) (commitdata *Commitment, err error) {
+	// c = -1 means "extract c from commitment"
+	if a >= len(dn.peers) || c >= len(dn.peers) || c < -1 || a < 0 {
+		return nil, errors.New("No such peer")
+	}
+	ackdata, err := dn.peers[a].pk.Verify(signed_ack_bs); if err != nil {
+		return nil, err
+	}
+	if string(ackdata[:4]) != "ACKN" {
+		return nil, errors.New("Bad tag on ack")
+	}
+	if c == -1 {
+		signed_commitment := &sgp.Signed{}
+		err = proto.Unmarshal(ackdata[4:], signed_commitment)
+		if err != nil {
+			return nil, err
+		}
+		commitdata_ := &Commitment{}
+		err = proto.Unmarshal(signed_commitment.Message[4:], commitdata_)
+		if err != nil {
+			return nil, err
+		}
+		c = int(*commitdata_.Server)
+	}
+	commitment, err := dn.peers[c].pk.Verify(ackdata[4:]); if err != nil {
+		return nil, err
+	}
+	if string(commitment[:4]) != "COMM" {
+		return nil, errors.New("Bad tag on commitment")
+	}
+	commitdata = new(Commitment)
+	err = proto.Unmarshal(commitment[4:], commitdata); if err != nil {
+		return nil, err
+	}
+	return
+}
+
+func UnverifiedUnpackAckCommitment(signed_ack_bs []byte) (commitdata *Commitment) { // for debugging
+	commitdata = new(Commitment)
+	signed_ack := &sgp.Signed{}
+	err := proto.Unmarshal(signed_ack_bs, signed_ack)
+	if err != nil {
+		log.Fatal(err)
+	}
+	signed_commitment_bs := signed_ack.Message[4:] // starts with "ACKN"
+	signed_commitment := &sgp.Signed{}
+	err = proto.Unmarshal(signed_commitment_bs, signed_commitment); if err != nil {
+		log.Fatal(err)
+	}
+	commitdata_bs := signed_commitment.Message[4:] // starts with "COMM"
+	err = proto.Unmarshal(commitdata_bs, commitdata); if err != nil {
+		log.Fatal(err)
+	}
+	return
+}
+
+func (dn *Dename) HandleAck(peer *Peer, signed_ack []byte) (err error) {
+	commitment, err := dn.UnpackAckCommitment(-1, peer.index, signed_ack)
+	if err != nil {
+		return
+	}
+	_, err = dn.db.Exec(`INSERT INTO
+			commitments(round,commiter,acknowledger,signature)
+			VALUES(?,?,?,?)`,
+			commitment.Round, commitment.Server, peer.index, signed_ack)
+	return
+}
+
+func (dn *Dename) WaitForTicks(round int, end time.Time) (err error) {
+	for {
+		log.Print(round, time.Now().Second(), end.Second())
+		if time.Now().After(end) {
+			end = end.Add(TICK_INTERVAL)
+			round++
+			// switch new requests to the new round first, then finalize the old
+			err = dn.NextRound(round, end)
+			if err != nil {
+				log.Fatal("Cannot advance round: ", err)
+			}
+			if round-1 != -1 {
+				dn.Tick(round-1)
+			}
+		}
+		time.Sleep(end.Sub(time.Now()))
+	}
+}
+
+func (dn *Dename) NextRound(round int, end time.Time) (err error) {
+	var key [32]byte
+	_, err = io.ReadFull(rand.Reader, key[:])
+	if err != nil {
+		return
+	}
+	tx, err := dn.db.Begin()
+	if err != nil {
+		return
+	}
+	_, err = tx.Exec("INSERT INTO rounds(id, end_time) VALUES(?,?)", round, end.Unix())
+	if err != nil {
+		tx.Rollback()
+		log.Fatal("Cannot insert to table rounds: ", err)
+	}
+	_, err = tx.Exec("INSERT INTO round_keys(round,server,key) VALUES(?,?,?)", round, dn.our_index, key[:])
+	if err != nil {
+		tx.Rollback()
+		return
+	}
+	tx.Commit()
+	return
 }
 
 func (dn *Dename) ReadQueue(round int) *Queue {
@@ -347,68 +492,56 @@ func (dn *Dename) Tick(round int) {
 	log.Print("Round ", round, " ended")
 	// commit to the current queue
 	Q := dn.ReadQueue(round)
-	commitdata_bytes, err := QueueToCommitdata(Q)
+	commitdata, err := QueueToCommitdata(Q)
 	if err != nil {
-		log.Fatal("Serialize commitment: ", err)
+		log.Fatal("Serialize commitment data: ", err)
 	}
-	commitment := dn.our_sk.Sign(append([]byte("COMM"), commitdata_bytes...))
-	commitment_bytes, err := proto.Marshal(commitment)
+	commitment := dn.our_sk.Sign(append([]byte("COMM"), commitdata...))
+	err = dn.HandleCommitment(dn.addr2peer[dn.our_ip], commitment)
 	if err != nil {
-		log.Fatal("Serialize signed commitment: ", err)
+		log.Fatal(err)
 	}
-	ack := dn.our_sk.Sign(append([]byte("ACKN"), commitment_bytes...))
-	ack_bytes, err := proto.Marshal(ack)
-	if err != nil {
-		log.Fatal("Serialize ack: ", err)
-	}
-	_, err = dn.db.Exec("INSERT INTO commitments(round,commiter,acknowledger,signature) VALUES(?,?,?,?)", round, dn.our_index, dn.our_index, ack_bytes)
-	if err != nil {
-		log.Fatal("Insert our commitment: ", err)
-	}
-	dn.peer_broadcast <- append([]byte{2}, commitment_bytes...)
-}
+	dn.peer_broadcast <- append([]byte{2}, commitment...)
 
-func (dn *Dename) NextRound(round int, end time.Time) (err error) {
-	var key [32]byte
-	_, err = io.ReadFull(rand.Reader, key[:])
-	if err != nil {
-		return
+	n := len(dn.addr2peer)
+	queueHash := make([][]byte, n)
+	hasAcked := make([][]bool, n)
+	for i := range hasAcked {
+		hasAcked[i] = make([]bool, n)
 	}
-	tx, err := dn.db.Begin()
-	if err != nil {
-		return
-	}
-	_, err = tx.Exec("INSERT INTO rounds(id, end_time) VALUES(?,?)", round, end.Unix())
-	if err != nil {
-		tx.Rollback()
-		log.Fatal("Cannot insert to table rounds: ", err)
-	}
-	_, err = tx.Exec("INSERT INTO round_keys(round,server,key) VALUES(?,?,?)", round, dn.our_index, key[:])
-	if err != nil {
-		tx.Rollback()
-		return
-	}
-	tx.Commit()
-	return
-}
+	acks_remaining := n*n
 
-
-func (dn *Dename) WaitForTicks(round int, end time.Time) (err error) {
-	for {
-		log.Print(round, time.Now().Second(), end.Second())
-		if time.Now().After(end) {
-			end = end.Add(TICK_INTERVAL)
-			round++
-			// switch new requests to the new round first, then finalize the old
-			err = dn.NextRound(round, end)
-			if err != nil {
-				log.Fatal("Cannot advance round: ", err)
-			}
-			dn.Tick(round-1)
+	rows, err := dn.db.Query("SELECT commiter,acknowledger,signature FROM commitments WHERE round = ?", round)
+	if err != nil {
+        log.Fatal("Cannot load commitments for round ", round,": ", err)
+    }
+	for rows.Next() {
+		var c, a int // commiter and acknowledger
+		var ack []byte
+		err = rows.Scan(&c, &a, &ack); if err != nil {
+			log.Fatal("Bad ack in database: ", err)
 		}
-		time.Sleep(end.Sub(time.Now()))
+		commitdata, err := dn.UnpackAckCommitment(c,a,ack)
+		if err != nil {
+			log.Fatal("Bad ack in database: ", err)
+		}
+		qh := commitdata.QueueHash
+		if queueHash[c] == nil {
+			queueHash[c] = qh
+		}
+		if ! bytes.Equal(queueHash[c], qh) {
+			log.Fatal("Server ", c, " commited to multiple things")
+		}
+		if ! hasAcked[a][c] {
+			acks_remaining--
+		}
+		hasAcked[a][c] = true
 	}
+	defer rows.Close()
+
+	log.Print("end dn.Tick(", round, ")")
 }
+
 
 func main() {
 	if len(os.Args) != 1 && len(os.Args) != 2 {
@@ -469,6 +602,7 @@ func main() {
 		}
 		addr := addr_struct.String()
 		dn.addr2peer[addr] = &Peer{index: i, addr: addr, pk: pk}
+		dn.peers[i] = dn.addr2peer[addr]
 
 		_, err = dn.db.Exec("INSERT OR IGNORE INTO servers(id) VALUES(?)", i)
 		if err != nil {
@@ -511,7 +645,7 @@ func main() {
 		log.Fatal("Cannot read table rounds: ", err)
 	}
 	round_end := time.Unix(round_end_u,0)
-	dn.WaitForTicks(round, round_end)
+	go dn.WaitForTicks(round, round_end)
 
 	go dn.HandleAllPeers()
 
