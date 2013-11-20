@@ -22,8 +22,13 @@ import (
 	"github.com/andres-erbsen/sgp"
 )
 
-const TICK_INTERVAL = 2*time.Second
+const TICK_INTERVAL = 4*time.Second
 const S2S_PORT = "6362"
+
+type VerifiedAckedCommitment struct {
+	Commitment *Commitment
+	Acknowledger int
+}
 
 type Dename struct {
 	db             *sql.DB
@@ -36,6 +41,7 @@ type Dename struct {
 	peer_connected chan net.Conn
 	peer_lnr       *net.TCPListener
 	client_lnr     net.Listener
+	acks_for_consensus  chan VerifiedAckedCommitment
 }
 
 func (dn *Dename) CreateTables() {
@@ -297,16 +303,16 @@ func (dn *Dename) HandleAllPeers() {
 
 
 func (dn *Dename) HandleMessage(peer *Peer, msg []byte) (err error) {
-	log.Print("Received ", len(msg), " bytes from ", peer.addr)
+	// log.Print("Received ", len(msg), " bytes from ", peer.addr)
 	if msg[0] == 1 {
 		_, err = dn.db.Exec("INSERT INTO transaction_queue(round,introducer,request) SELECT MAX(id),?,? FROM rounds;", peer.index, msg[1:])
 		if err != nil {
 			log.Fatal("Cannot insert new transaction to queue: ", err)
 		}
 	} else if msg[0] == 2 {
-		go dn.HandleCommitment(peer, msg[1:])
+		return dn.HandleCommitment(peer, msg[1:])
 	} else if msg[0] == 3 {
-		go dn.HandleAck(peer, msg[1:])
+		return dn.HandleAck(peer, msg[1:])
 	} else {
 		log.Print("Unknown message of type ", msg[0]," from ", peer.index)
 	}
@@ -315,6 +321,7 @@ func (dn *Dename) HandleMessage(peer *Peer, msg []byte) (err error) {
 
 
 func (dn *Dename) HandleCommitment(peer *Peer, signed_commitment []byte) (err error) {
+	log.Print("Commit from ", peer.index)
 	commitment, err := peer.pk.Verify(signed_commitment)
 	if err != nil {
 		return
@@ -330,11 +337,9 @@ func (dn *Dename) HandleCommitment(peer *Peer, signed_commitment []byte) (err er
 		return errors.New("Bad server id commitment")
 	}
 	ack:= dn.our_sk.Sign(append([]byte("ACKN"), signed_commitment...))
-	_, err = dn.db.Exec(`INSERT INTO
-			commitments(round,commiter,acknowledger,signature)
-			VALUES(?,?,?,?)`,
-			cd.Round, peer.index, dn.our_index, ack); if err != nil {
-		return
+	err = dn.HandleAck(dn.peers[dn.our_index], ack)
+	if err != nil {
+		panic(err)
 	}
 	dn.peer_broadcast <- append([]byte{3}, ack...)
 	return nil
@@ -405,6 +410,12 @@ func (dn *Dename) HandleAck(peer *Peer, signed_ack []byte) (err error) {
 			commitments(round,commiter,acknowledger,signature)
 			VALUES(?,?,?,?)`,
 			commitment.Round, commitment.Server, peer.index, signed_ack)
+	// log.Print(peer.index, " acked ", *commitment.Server, " (round ", *commitment.Round, ")")
+	log.Print("Ack ",*commitment.Server ," from ", peer.index)
+	go func() { // for efficency, one would use ana ctual elastic buffer channel
+		dn.acks_for_consensus <- VerifiedAckedCommitment{
+			Commitment:commitment, Acknowledger: peer.index}
+	}()
 	return
 }
 
@@ -515,17 +526,32 @@ func (dn *Dename) Tick(round int) {
 	if err != nil {
         log.Fatal("Cannot load commitments for round ", round,": ", err)
     }
-	for rows.Next() {
-		var c, a int // commiter and acknowledger
-		var ack []byte
-		err = rows.Scan(&c, &a, &ack); if err != nil {
-			log.Fatal("Bad ack in database: ", err)
+	go func () {
+		defer rows.Close()
+		for rows.Next() {
+			var c, a int // commiter and acknowledger
+			var ack []byte
+			err = rows.Scan(&c, &a, &ack); if err != nil {
+				log.Fatal("Bad ack in database: ", err)
+			}
+			commitment, err := dn.UnpackAckCommitment(c,a,ack)
+			if err != nil {
+				log.Fatal("Bad ack in database: ", err)
+			}
+			dn.acks_for_consensus <- VerifiedAckedCommitment{
+				Commitment: commitment,
+				Acknowledger: a}
 		}
-		commitdata, err := dn.UnpackAckCommitment(c,a,ack)
-		if err != nil {
-			log.Fatal("Bad ack in database: ", err)
+		// log.Print("Loaded all relevant acks from table")
+	}()
+
+	for ack := range dn.acks_for_consensus {
+		if int(*ack.Commitment.Round) != round {
+			continue
 		}
-		qh := commitdata.QueueHash
+		a := ack.Acknowledger
+		c := int(*ack.Commitment.Server)
+		qh := ack.Commitment.QueueHash
 		if queueHash[c] == nil {
 			queueHash[c] = qh
 		}
@@ -536,8 +562,11 @@ func (dn *Dename) Tick(round int) {
 			acks_remaining--
 		}
 		hasAcked[a][c] = true
+		if acks_remaining == 0 {
+			break
+		}
+		log.Print( a," @ ",c,"; need ", acks_remaining, " more")
 	}
-	defer rows.Close()
 
 	log.Print("end dn.Tick(", round, ")")
 }
@@ -552,12 +581,14 @@ func main() {
 	dn := &Dename{our_ip: "0.0.0.0",
 		our_index:      -1,
 		addr2peer:      make(map[string]*Peer),
+		peers:          make(map[int]*Peer),
 		peer_broadcast: make(chan []byte),
-		peer_connected: make(chan net.Conn, 100)}
+		peer_connected: make(chan net.Conn, 100),
+		acks_for_consensus: make(chan VerifiedAckedCommitment)}
 	if len(os.Args) >= 2 {
 		dn.our_ip = os.Args[1]
 	}
-	dn.db, err = sql.Open("sqlite3", "dename.db")
+	dn.db, err = sql.Open("sqlite3", "file:dename.db?cache=shared")
 	if err != nil {
 		log.Fatal("Cannot open dename.db", err)
 	}
