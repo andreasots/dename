@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"sync"
 	"time"
 	"bytes"
 	_ "github.com/mattn/go-sqlite3"
@@ -23,7 +24,10 @@ type Peer struct {
 	index int
 	addr  string
 	pk    *sgp.Entity
-	conn  net.Conn
+
+	sync.RWMutex
+	conn  net.Conn // mutable
+	closeOnce *sync.Once
 }
 
 type Dename struct {
@@ -37,7 +41,6 @@ type Dename struct {
 	client_lnr     net.Listener
 
 	peer_broadcast chan []byte
-	peer_connected chan net.Conn
 	acks_for_consensus  chan VerifiedAckedCommitment
 }
 
@@ -254,7 +257,7 @@ func (dn *Dename) Tick(round int) {
 		log.Fatal("Serialize commitment data: ", err)
 	}
 	commitment := dn.our_sk.Sign(append([]byte("COMM"), commitdata...))
-	err = dn.HandleCommitment(dn.addr2peer[dn.us.addr], commitment)
+	err = dn.HandleCommitment(dn.us, commitment)
 	if err != nil {
 		log.Fatal(err)
 	}

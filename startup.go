@@ -27,7 +27,6 @@ func main() {
 		peers:          make(map[int]*Peer),
 
 		peer_broadcast: make(chan []byte),
-		peer_connected: make(chan net.Conn, 100),
 		acks_for_consensus: make(chan VerifiedAckedCommitment)}
 	dn.db, err = sql.Open("sqlite3", "file:dename.db?cache=shared")
 	if err != nil {
@@ -85,22 +84,25 @@ func main() {
 			dn.us = dn.peers[i]
 			continue
 		}
+	}
 
-		// pick an ephermal port with the given ip as local address
-		laddr_ip, err := net.ResolveIPAddr("", dn.us.addr)
-		if err != nil {
-			log.Fatal("resolve our ip: ", err)
-		}
+	// pick an ephermal port with the given ip as local address
+	laddr_ip, err := net.ResolveIPAddr("", dn.us.addr)
+	if err != nil {
+		log.Fatal("resolve our ip: ", err)
+	}
+
+	for _, peer := range(dn.peers) {
 		laddr := &net.TCPAddr{IP: laddr_ip.IP}
 
-		raddr, err := net.ResolveTCPAddr("tcp", host+":"+S2S_PORT)
+		raddr, err := net.ResolveTCPAddr("tcp", peer.addr+":"+S2S_PORT)
 		if err != nil {
 			log.Fatal(err)
 		}
 		conn, err := net.DialTCP("tcp", laddr, raddr)
 		if err == nil {
 			conn.SetNoDelay(false)
-			dn.peer_connected <- conn
+			dn.PeerConnected(conn)
 		} else {
 			log.Print("connect to peer: ", err, laddr, raddr)
 		}
@@ -139,7 +141,7 @@ func main() {
 	}
 	go dn.WaitForTicks(round, round_end)
 
-	go dn.HandleAllPeers()
+	go dn.HandleBroadcasts()
 
 	our_server_tcpaddr, err := net.ResolveTCPAddr("tcp", dn.us.addr+":"+S2S_PORT)
 	if err != nil {
