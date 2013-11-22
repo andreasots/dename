@@ -39,6 +39,7 @@ func (dn *Dename) PeerConnected(conn net.Conn) {
 		return
 	}
 	peer.Lock()
+	defer peer.Unlock()
 	// determine whether to use this connection or keep the current
 	new_is_better := true
 	log.Print("peer: ", peer.addr, " old conn: ", peer.conn, " new: ", conn)
@@ -60,7 +61,6 @@ func (dn *Dename) PeerConnected(conn net.Conn) {
 	peer.closeOnce = new(sync.Once)
 	peer.conn = conn
 	go dn.ReceiveLoop(peer)
-	peer.Unlock()
 }
 
 func (dn *Dename) ReceiveLoop(peer *Peer) (err error) {
