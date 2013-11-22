@@ -1,23 +1,23 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
-	"sync"
-	"time"
-	"bytes"
+	"errors"
 	_ "github.com/mattn/go-sqlite3"
 	"io"
 	"log"
 	"net"
-	"errors"
+	"sync"
+	"time"
 
 	"code.google.com/p/goprotobuf/proto"
 	"github.com/andres-erbsen/sgp"
 )
 
-const TICK_INTERVAL = 4*time.Second
+const TICK_INTERVAL = 4 * time.Second
 const S2S_PORT = "6362"
 
 type Peer struct {
@@ -26,26 +26,26 @@ type Peer struct {
 	pk    *sgp.Entity
 
 	sync.RWMutex
-	conn  net.Conn // mutable
+	conn      net.Conn // mutable
 	closeOnce *sync.Once
 }
 
 type Dename struct {
-	db             *sql.DB
-	our_sk         sgp.SecretKey
-	us             *Peer
-	peers          map[int]*Peer
-	addr2peer      map[string]*Peer
+	db        *sql.DB
+	our_sk    sgp.SecretKey
+	us        *Peer
+	peers     map[int]*Peer
+	addr2peer map[string]*Peer
 
-	peer_lnr       *net.TCPListener
-	client_lnr     net.Listener
+	peer_lnr   *net.TCPListener
+	client_lnr net.Listener
 
-	peer_broadcast chan []byte
-	acks_for_consensus  chan VerifiedAckedCommitment
+	peer_broadcast     chan []byte
+	acks_for_consensus chan VerifiedAckedCommitment
 }
 
 type VerifiedAckedCommitment struct {
-	Commitment *Commitment
+	Commitment   *Commitment
 	Acknowledger int
 }
 
@@ -61,11 +61,10 @@ func (dn *Dename) HandleMessage(peer *Peer, msg []byte) (err error) {
 	} else if msg[0] == 3 {
 		return dn.HandleAck(peer, msg[1:])
 	} else {
-		log.Print("Unknown message of type ", msg[0]," from ", peer.index)
+		log.Print("Unknown message of type ", msg[0], " from ", peer.index)
 	}
 	return
 }
-
 
 func (dn *Dename) HandleCommitment(peer *Peer, signed_commitment []byte) (err error) {
 	log.Print("Commit from ", peer.index)
@@ -77,13 +76,14 @@ func (dn *Dename) HandleCommitment(peer *Peer, signed_commitment []byte) (err er
 		return errors.New("Bad tag on commitment")
 	}
 	cd := &Commitment{}
-	err = proto.Unmarshal(commitment[4:], cd); if err != nil {
+	err = proto.Unmarshal(commitment[4:], cd)
+	if err != nil {
 		return
 	}
 	if *cd.Server != int64(peer.index) {
 		return errors.New("Bad server id commitment")
 	}
-	ack:= dn.our_sk.Sign(append([]byte("ACKN"), signed_commitment...))
+	ack := dn.our_sk.Sign(append([]byte("ACKN"), signed_commitment...))
 	err = dn.HandleAck(dn.peers[dn.us.index], ack)
 	if err != nil {
 		panic(err)
@@ -97,7 +97,8 @@ func (dn *Dename) UnpackAckCommitment(c, a int, signed_ack_bs []byte) (commitdat
 	if a >= len(dn.peers) || c >= len(dn.peers) || c < -1 || a < 0 {
 		return nil, errors.New("No such peer")
 	}
-	ackdata, err := dn.peers[a].pk.Verify(signed_ack_bs); if err != nil {
+	ackdata, err := dn.peers[a].pk.Verify(signed_ack_bs)
+	if err != nil {
 		return nil, err
 	}
 	if string(ackdata[:4]) != "ACKN" {
@@ -116,14 +117,16 @@ func (dn *Dename) UnpackAckCommitment(c, a int, signed_ack_bs []byte) (commitdat
 		}
 		c = int(*commitdata_.Server)
 	}
-	commitment, err := dn.peers[c].pk.Verify(ackdata[4:]); if err != nil {
+	commitment, err := dn.peers[c].pk.Verify(ackdata[4:])
+	if err != nil {
 		return nil, err
 	}
 	if string(commitment[:4]) != "COMM" {
 		return nil, errors.New("Bad tag on commitment")
 	}
 	commitdata = new(Commitment)
-	err = proto.Unmarshal(commitment[4:], commitdata); if err != nil {
+	err = proto.Unmarshal(commitment[4:], commitdata)
+	if err != nil {
 		return nil, err
 	}
 	return
@@ -138,11 +141,13 @@ func UnverifiedUnpackAckCommitment(signed_ack_bs []byte) (commitdata *Commitment
 	}
 	signed_commitment_bs := signed_ack.Message[4:] // starts with "ACKN"
 	signed_commitment := &sgp.Signed{}
-	err = proto.Unmarshal(signed_commitment_bs, signed_commitment); if err != nil {
+	err = proto.Unmarshal(signed_commitment_bs, signed_commitment)
+	if err != nil {
 		log.Fatal(err)
 	}
 	commitdata_bs := signed_commitment.Message[4:] // starts with "COMM"
-	err = proto.Unmarshal(commitdata_bs, commitdata); if err != nil {
+	err = proto.Unmarshal(commitdata_bs, commitdata)
+	if err != nil {
 		log.Fatal(err)
 	}
 	return
@@ -156,12 +161,12 @@ func (dn *Dename) HandleAck(peer *Peer, signed_ack []byte) (err error) {
 	_, err = dn.db.Exec(`INSERT INTO
 			commitments(round,commiter,acknowledger,signature)
 			VALUES(?,?,?,?)`,
-			commitment.Round, commitment.Server, peer.index, signed_ack)
+		commitment.Round, commitment.Server, peer.index, signed_ack)
 	// log.Print(peer.index, " acked ", *commitment.Server, " (round ", *commitment.Round, ")")
-	log.Print("Ack ",*commitment.Server ," from ", peer.index)
+	log.Print("Ack ", *commitment.Server, " from ", peer.index)
 	go func() { // for efficency, one would use ana ctual elastic buffer channel
 		dn.acks_for_consensus <- VerifiedAckedCommitment{
-			Commitment:commitment, Acknowledger: peer.index}
+			Commitment: commitment, Acknowledger: peer.index}
 	}()
 	return
 }
@@ -178,7 +183,7 @@ func (dn *Dename) WaitForTicks(round int, end time.Time) (err error) {
 				log.Fatal("Cannot advance round: ", err)
 			}
 			if round-1 != -1 {
-				dn.Tick(round-1)
+				dn.Tick(round - 1)
 			}
 		}
 		time.Sleep(end.Sub(time.Now()))
@@ -201,7 +206,7 @@ func (dn *Dename) NextRound(round int, end time.Time) (err error) {
 		log.Fatal("Cannot insert to table rounds: ", err)
 	}
 	_, err = tx.Exec("INSERT INTO round_keys(round,server,key) VALUES(?,?,?)",
-			round, dn.us.index, key[:])
+		round, dn.us.index, key[:])
 	if err != nil {
 		tx.Rollback()
 		return
@@ -212,12 +217,12 @@ func (dn *Dename) NextRound(round int, end time.Time) (err error) {
 
 func (dn *Dename) ReadQueue(round int) *Queue {
 	round_, server_ := int64(round), int64(dn.us.index)
-	Q := &Queue{Round: &round_, Server: &server_, Entries: make([][]byte,1)}
+	Q := &Queue{Round: &round_, Server: &server_, Entries: make([][]byte, 1)}
 	rows, err := dn.db.Query(`SELECT request FROM transaction_queue WHERE round
 			= ? AND introducer = ? ORDER BY id`, round, dn.us.index)
 	if err != nil {
-        log.Fatal("Cannot load transactions for tick: ", err)
-    }
+		log.Fatal("Cannot load transactions for tick: ", err)
+	}
 	defer rows.Close()
 	var transaction []byte
 	for rows.Next() {
@@ -269,26 +274,27 @@ func (dn *Dename) Tick(round int) {
 	for i := range hasAcked {
 		hasAcked[i] = make([]bool, n)
 	}
-	acks_remaining := n*n
+	acks_remaining := n * n
 
 	rows, err := dn.db.Query("SELECT commiter,acknowledger,signature FROM commitments WHERE round = ?", round)
 	if err != nil {
-        log.Fatal("Cannot load commitments for round ", round,": ", err)
-    }
-	go func () {
+		log.Fatal("Cannot load commitments for round ", round, ": ", err)
+	}
+	go func() {
 		defer rows.Close()
 		for rows.Next() {
 			var c, a int // commiter and acknowledger
 			var ack []byte
-			err = rows.Scan(&c, &a, &ack); if err != nil {
+			err = rows.Scan(&c, &a, &ack)
+			if err != nil {
 				log.Fatal("Bad ack in database: ", err)
 			}
-			commitment, err := dn.UnpackAckCommitment(c,a,ack)
+			commitment, err := dn.UnpackAckCommitment(c, a, ack)
 			if err != nil {
 				log.Fatal("Bad ack in database: ", err)
 			}
 			dn.acks_for_consensus <- VerifiedAckedCommitment{
-				Commitment: commitment,
+				Commitment:   commitment,
 				Acknowledger: a}
 		}
 		// log.Print("Loaded all relevant acks from table")
@@ -304,19 +310,18 @@ func (dn *Dename) Tick(round int) {
 		if queueHash[c] == nil {
 			queueHash[c] = qh
 		}
-		if ! bytes.Equal(queueHash[c], qh) {
+		if !bytes.Equal(queueHash[c], qh) {
 			log.Fatal("Server ", c, " commited to multiple things")
 		}
-		if ! hasAcked[a][c] {
+		if !hasAcked[a][c] {
 			acks_remaining--
 		}
 		hasAcked[a][c] = true
 		if acks_remaining == 0 {
 			break
 		}
-		log.Print( a," @ ",c,"; need ", acks_remaining, " more")
+		log.Print(a, " @ ", c, "; need ", acks_remaining, " more")
 	}
 
 	log.Print("end dn.Tick(", round, ")")
 }
-

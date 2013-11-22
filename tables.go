@@ -1,8 +1,8 @@
 package main
 
 import (
-	"log"
 	_ "github.com/mattn/go-sqlite3"
+	"log"
 )
 
 func (dn *Dename) CreateTables() {

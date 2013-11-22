@@ -4,11 +4,10 @@ import (
 	"bytes"
 	_ "github.com/mattn/go-sqlite3"
 	"log"
+	"net"
 	"strings"
 	"sync"
-	"net"
 )
-
 
 func (dn *Dename) ListenForClients() {
 	for {
@@ -51,7 +50,7 @@ func (dn *Dename) PeerConnected(conn net.Conn) {
 			new_is_better = bytes.Compare(dn.our_sk.Entity.Bytes, peer.pk.Bytes) >= 0
 		}
 	}
-	if ! new_is_better {
+	if !new_is_better {
 		conn.Close()
 		return
 	}
@@ -100,7 +99,7 @@ func (peer *Peer) CloseConn() {
 }
 
 func (dn *Dename) HandleBroadcasts() {
-	for msg := range(dn.peer_broadcast) {
+	for msg := range dn.peer_broadcast {
 		log.Print("broadcast ", len(msg), " bytes")
 		for _, peer := range dn.addr2peer {
 			peer.RLock()
@@ -120,4 +119,3 @@ func (dn *Dename) HandleBroadcasts() {
 		}
 	}
 }
-

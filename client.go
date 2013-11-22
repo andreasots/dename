@@ -14,8 +14,6 @@ import (
 	"github.com/andres-erbsen/sgp"
 )
 
-
-
 func (dn *Dename) HandleClient(conn net.Conn) {
 	db := dn.db
 	defer conn.Close()
@@ -90,4 +88,3 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 	}
 	dn.peer_broadcast <- append([]byte{1}, rq_box...)
 }
-

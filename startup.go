@@ -1,32 +1,31 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/base64"
-	"time"
-	"bytes"
 	"fmt"
 	_ "github.com/mattn/go-sqlite3"
 	"io"
 	"log"
 	"net"
 	"os"
+	"time"
 
 	"github.com/andres-erbsen/sgp"
 )
 
-
 func main() {
-	if len(os.Args) != 2 &&  len(os.Args) != 3 {
-		log.Fatal("USAGE: ",os.Args[0], " LOCALIP [STARTTIME]")
+	if len(os.Args) != 2 && len(os.Args) != 3 {
+		log.Fatal("USAGE: ", os.Args[0], " LOCALIP [STARTTIME]")
 	}
 
 	var err error
 	dn := &Dename{
-		addr2peer:      make(map[string]*Peer),
-		peers:          make(map[int]*Peer),
+		addr2peer: make(map[string]*Peer),
+		peers:     make(map[int]*Peer),
 
-		peer_broadcast: make(chan []byte),
+		peer_broadcast:     make(chan []byte),
 		acks_for_consensus: make(chan VerifiedAckedCommitment)}
 	dn.db, err = sql.Open("sqlite3", "file:dename.db?cache=shared")
 	if err != nil {
@@ -92,7 +91,7 @@ func main() {
 		log.Fatal("resolve our ip: ", err)
 	}
 
-	for _, peer := range(dn.peers) {
+	for _, peer := range dn.peers {
 		laddr := &net.TCPAddr{IP: laddr_ip.IP}
 
 		raddr, err := net.ResolveTCPAddr("tcp", peer.addr+":"+S2S_PORT)
@@ -126,18 +125,18 @@ func main() {
 		if len(os.Args) < 3 {
 			log.Fatal("Need to specify start itme of first round")
 		}
-		reftime, _ := time.Parse("","")
+		reftime, _ := time.Parse("", "")
 		intime, err := time.Parse("15:04:05", os.Args[2])
 		if err != nil {
 			log.Fatal("Bad time input")
 		}
-		round_end = time.Now().Truncate(24*time.Hour).Add(intime.Sub(reftime))
+		round_end = time.Now().Truncate(24 * time.Hour).Add(intime.Sub(reftime))
 		log.Print("First round will end at ", round_end)
 	} else {
 		if len(os.Args) > 2 {
 			log.Fatal("Extroneous start time of first round")
 		}
-		round_end = time.Unix(round_end_u,0)
+		round_end = time.Unix(round_end_u, 0)
 	}
 	go dn.WaitForTicks(round, round_end)
 
