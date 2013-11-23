@@ -9,3 +9,9 @@ message Commitment {
 	required int64 server = 2;
 	required bytes queue_hash  = 3;
 }
+
+message RoundKey {
+	required int64 round = 1;
+	required int64 server = 2;
+	required bytes key  = 3;
+}

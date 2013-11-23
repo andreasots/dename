@@ -51,7 +51,8 @@ func dename(cfg *Cfg) {
 		peers:     make(map[int]*Peer),
 
 		peer_broadcast:     make(chan []byte),
-		acks_for_consensus: make(chan VerifiedAckedCommitment)}
+		acks_for_consensus: make(chan VerifiedAckedCommitment),
+		keys_for_consensus: make(chan *RoundKey)}
 
 	dn.db, err = sql.Open("postgres", "user="+cfg.Database.Username+" password="+cfg.Database.Password +" dbname="+cfg.Database.Name+" sslmode=disable")
 	if err != nil {

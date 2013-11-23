@@ -77,5 +77,37 @@ func (m *Commitment) GetQueueHash() []byte {
 	return nil
 }
 
+type RoundKey struct {
+	Round            *int64 `protobuf:"varint,1,req,name=round" json:"round,omitempty"`
+	Server           *int64 `protobuf:"varint,2,req,name=server" json:"server,omitempty"`
+	Key              []byte `protobuf:"bytes,3,req,name=key" json:"key,omitempty"`
+	XXX_unrecognized []byte `json:"-"`
+}
+
+func (m *RoundKey) Reset()         { *m = RoundKey{} }
+func (m *RoundKey) String() string { return proto.CompactTextString(m) }
+func (*RoundKey) ProtoMessage()    {}
+
+func (m *RoundKey) GetRound() int64 {
+	if m != nil && m.Round != nil {
+		return *m.Round
+	}
+	return 0
+}
+
+func (m *RoundKey) GetServer() int64 {
+	if m != nil && m.Server != nil {
+		return *m.Server
+	}
+	return 0
+}
+
+func (m *RoundKey) GetKey() []byte {
+	if m != nil {
+		return m.Key
+	}
+	return nil
+}
+
 func init() {
 }

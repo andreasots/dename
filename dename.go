@@ -19,6 +19,7 @@ import (
 
 const TICK_INTERVAL = 4 * time.Second
 const S2S_PORT = "6362"
+var errPeer = errors.New("Peer id mismatch")
 
 type Peer struct {
 	index int
@@ -42,6 +43,7 @@ type Dename struct {
 
 	peer_broadcast     chan []byte
 	acks_for_consensus chan VerifiedAckedCommitment
+	keys_for_consensus chan *RoundKey
 }
 
 type VerifiedAckedCommitment struct {
@@ -51,16 +53,19 @@ type VerifiedAckedCommitment struct {
 
 func (dn *Dename) HandleMessage(peer *Peer, msg []byte) (err error) {
 	// log.Print("Received ", len(msg), " bytes from ", peer.addr)
-	if msg[0] == 1 {
+	switch msg[0] {
+	case 1:
 		_, err = dn.db.Exec("INSERT INTO transaction_queue(round,introducer,request) SELECT MAX(id),$1,$2 FROM rounds;", peer.index, msg[1:])
 		if err != nil {
 			log.Fatal("Cannot insert new transaction to queue: ", err)
 		}
-	} else if msg[0] == 2 {
+	case 2:
 		return dn.HandleCommitment(peer, msg[1:])
-	} else if msg[0] == 3 {
+	case 3:
 		return dn.HandleAck(peer, msg[1:])
-	} else {
+	case 4:
+		return dn.HandleRoundKey(peer, msg[1:])
+	default:
 		log.Print("Unknown message of type ", msg[0], " from ", peer.index)
 	}
 	return
@@ -129,6 +134,9 @@ func (dn *Dename) UnpackAckCommitment(c, a int, signed_ack_bs []byte) (commitdat
 	if err != nil {
 		return nil, err
 	}
+	if commitdata.GetServer() != int64(dn.peers[c].index) {
+		return nil, errPeer
+	}
 	return
 }
 
@@ -167,6 +175,24 @@ func (dn *Dename) HandleAck(peer *Peer, signed_ack []byte) (err error) {
 	go func() { // for efficency, one would use ana ctual elastic buffer channel
 		dn.acks_for_consensus <- VerifiedAckedCommitment{
 			Commitment: commitment, Acknowledger: peer.index}
+	}()
+	return
+}
+
+func (dn *Dename) HandleRoundKey(peer *Peer, rk_msg []byte) (err error) {
+	rk_pb := new(RoundKey)
+	err = proto.Unmarshal(rk_msg, rk_pb)
+	if err != nil {
+		return
+	}
+	if rk_pb.GetServer() != int64(peer.index) {
+		return errPeer
+	}
+	_, err = dn.db.Exec(`INSERT INTO round_keys(round,server,key)
+			VALUES($1,$2,$3)`, int(rk_pb.GetRound()), peer.index, rk_pb.Key)
+	log.Print("Round key from ", peer.index)
+	go func() { // for efficency, one would use ana ctual elastic buffer channel
+		dn.keys_for_consensus <- rk_pb
 	}()
 	return
 }
@@ -323,5 +349,53 @@ func (dn *Dename) Tick(round int) {
 		log.Print(a, " @ ", c, "; need ", acks_remaining, " more")
 	}
 
+	var key []byte
+	err = dn.db.QueryRow(`SELECT key FROM round_keys WHERE
+			server = $1 AND round = $2;`, dn.us.index, round).Scan(&key)
+	if err != nil {
+		log.Fatalf("Cannot extract our round %d key: %f",round,err)
+	}
+	msg, err := proto.Marshal(roundKey(round, dn.us.index, key))
+	if err != nil {
+		log.Fatal(err)
+	}
+	dn.peer_broadcast <- append([]byte{4}, msg...)
+
+	hasKeyed := make([]bool, n)
+	keys_remaining := n
+
+	rows, err = dn.db.Query("SELECT server,key FROM round_keys WHERE round = $1", round)
+	if err != nil {
+		log.Fatal("Cannot load keys for round ", round, ": ", err)
+	}
+	go func() {
+		defer rows.Close()
+		for rows.Next() {
+			var key []byte
+			var server int
+			err = rows.Scan(&server, &key)
+			if err != nil {
+				log.Fatal("Bad ack in database: ", err)
+			}
+			dn.keys_for_consensus <- roundKey(round,server, key)
+		}
+	}()
+
+	for keying := range dn.keys_for_consensus {
+		if ! hasKeyed[*keying.Server] {
+			keys_remaining--
+			hasKeyed[*keying.Server] = true
+		}
+		if keys_remaining == 0 {
+			break
+		}
+	}
+
 	log.Print("end dn.Tick(", round, ")")
+}
+
+func roundKey(round, server int, key []byte) *RoundKey {
+	round_ := int64(round)
+	server_ := int64(server)
+	return &RoundKey{Round:&round_, Server:&server_, Key: key}
 }
