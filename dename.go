@@ -1,6 +1,7 @@
 package main
 
 import (
+	"code.google.com/p/go.crypto/nacl/secretbox"		
 	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
@@ -12,6 +13,7 @@ import (
 	"net"
 	"sync"
 	"time"
+	"sort"
 
 	"code.google.com/p/goprotobuf/proto"
 	"github.com/andres-erbsen/sgp"
@@ -321,7 +323,7 @@ func (dn *Dename) Tick(round int) {
 		for rows.Next() {
 			var c, a int // commiter and acknowledger
 			var ack []byte
-			err = rows.Scan(&c, &a, &ack)
+			err := rows.Scan(&c, &a, &ack)
 			if err != nil {
 				log.Fatal("Cannot load ack from database: ", err)
 			}
@@ -369,9 +371,9 @@ func (dn *Dename) Tick(round int) {
 	//===== Check the commitments =====//
 	queue := make([]*Queue, n)
 	queueOk := make([]bool, n)
-	checked := make(chan struct{})
 	for i := range(dn.peers) {
-		go func(i int){
+		go func(i int) {
+			var err error
 			queue[i] = dn.ReadQueue(round, i)
 			qh, err := HashQueue(queue[i])
 			if err != nil {
@@ -381,11 +383,11 @@ func (dn *Dename) Tick(round int) {
 			if ! queueOk[i] {
 				log.Printf("%s\n%s\n%s", queue[i], qh, queueHash[i])
 			}
-			checked <- struct{}{}
+			quit <- struct{}{}
 		}(i)
 	}
 	for _ = range(dn.peers) {
-		<- checked
+		<- quit
 	}
 	all_ok := true
 	for i := range(dn.peers) {
@@ -411,6 +413,7 @@ func (dn *Dename) Tick(round int) {
 
 	//===== Receive round keys =====//
 	hasKeyed := make([]bool, n)
+	roundKeys := make([][32]byte, n)
 	keys_remaining := n
 
 	rows, err = dn.db.Query("SELECT server,key FROM round_keys WHERE round = $1", round)
@@ -422,7 +425,7 @@ func (dn *Dename) Tick(round int) {
 		for rows.Next() {
 			var key []byte
 			var server int
-			err = rows.Scan(&server, &key)
+			err := rows.Scan(&server, &key)
 			if err != nil {
 				log.Fatal("Cannot load key from database: ", err)
 			}
@@ -440,12 +443,56 @@ func (dn *Dename) Tick(round int) {
 		if ! hasKeyed[*keying.Server] {
 			keys_remaining--
 			hasKeyed[*keying.Server] = true
+			copy(roundKeys[*keying.Server][:], keying.Key)
 		}
 		if keys_remaining == 0 {
 			break
 		}
 	}
 	quit <- struct{}{}
+
+	//===== Decrypt the queues =====//
+	peers_rq := make([]map[string][]byte, n)
+	for i := range(dn.peers) {
+		go func(i int){
+			peers_rq[i] = make(map[string][]byte)
+			var nonce [24]byte
+			for j,rq_box := range(queue[i].Entries) {
+				copy(nonce[:], rq_box[:24])
+				var ok bool
+				var err error
+				rq_bs := []byte{}
+				rq_bs, ok = secretbox.Open(rq_bs, rq_box[24:], &nonce, &roundKeys[i])
+				if ! ok {
+					log.Fatal("Decryption failed at %d from %d in round %d",i,j,round)
+				}
+				name, err := dn.ValidateRequest(rq_bs)
+				if err != nil {
+					log.Fatal("Validation failed for \"%s\" from %d in round %d",
+							name,i,round)
+				}
+				if _, present := peers_rq[i][name]; present {
+					log.Fatal("Multiple requests for \"%s\" from %d in round %d",
+							name,i,round)
+				}
+				peers_rq[i][name] = rq_bs
+			}
+			quit <- struct{}{}
+		}(i)
+	}
+	for _ = range(dn.peers) {
+		<- quit
+	}
+	name_rq := make(map[string][][]byte)
+	for i := range(dn.peers) {
+		for name, rq_bs := range(peers_rq[i]) {
+			name_rq[name] = append(name_rq[name], rq_bs)
+		}
+	}
+	for name, rqs := range(name_rq) {
+		ByteSlices(rqs).Sort()
+		log.Print("Name \"",name, "\" transferred")
+	}
 
 	log.Print("end dn.Tick(", round, ")")
 }
@@ -455,3 +502,9 @@ func roundKey(round, server int, key []byte) *RoundKey {
 	server_ := int64(server)
 	return &RoundKey{Round:&round_, Server:&server_, Key: key}
 }
+
+type ByteSlices [][]byte
+func (p ByteSlices) Len() int           { return len(p) }
+func (p ByteSlices) Less(i, j int) bool { return bytes.Compare(p[i], p[j]) < 0 }
+func (p ByteSlices) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
+func (p ByteSlices) Sort()              { sort.Sort(p) }

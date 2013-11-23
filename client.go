@@ -14,14 +14,7 @@ import (
 	"github.com/andres-erbsen/sgp"
 )
 
-func (dn *Dename) HandleClient(conn net.Conn) {
-	db := dn.db
-	defer conn.Close()
-	rq_bs, err := ioutil.ReadAll(conn)
-	if err != nil {
-		return
-	}
-
+func (dn *Dename) ValidateRequest(rq_bs []byte) (name string, err error) {
 	signed_rq := &sgp.Signed{}
 	err = proto.Unmarshal(rq_bs, signed_rq)
 	if err != nil {
@@ -40,9 +33,10 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 		return
 	}
 
+	name = string(new_mapping.Name)
 	var pk_bytes []byte
 	pk := &sgp.Entity{}
-	err = db.QueryRow("SELECT pubkey FROM name_mapping WHERE name = $1", new_mapping.Name).Scan(&pk_bytes)
+	err = dn.db.QueryRow("SELECT pubkey FROM name_mapping WHERE name = $1", name).Scan(&pk_bytes)
 	if err == nil {
 		err = pk.Parse(pk_bytes)
 		if err != nil {
@@ -58,12 +52,25 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 	if !pk.VerifyPb(signed_rq) {
 		return
 	}
-	log.Print("valid transfer of \"", string(new_mapping.Name), "\"")
+	return name, nil
+}
+
+func (dn *Dename) HandleClient(conn net.Conn) {
+	defer conn.Close()
+	rq_bs, err := ioutil.ReadAll(conn)
+	if err != nil {
+		return
+	}
+	name, err := dn.ValidateRequest(rq_bs)
+	if err != nil {
+		return
+	}
+	log.Print("valid transfer of \"", name, "\"")
 
 	// Look up the key we use to encrypt this round's queue messages
 	var key_slice []byte
 	var round int
-	err = db.QueryRow(`SELECT round,key FROM round_keys WHERE server = $1 ORDER
+	err = dn.db.QueryRow(`SELECT round,key FROM round_keys WHERE server = $1 ORDER
 			BY id DESC LIMIT 1;`, dn.us.index).Scan(&round, &key_slice)
 	if err != nil {
 		log.Fatal("Cannot get latest round key: ", err)
@@ -79,8 +86,8 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 
 	var rq_box []byte
 	rq_box = secretbox.Seal(rq_box[:0], rq_bs, nonce, key)
-	rq_box = append(rq_box, nonce[:]...)
-	_, err = db.Exec("INSERT INTO transaction_queue(round,introducer,request) VALUES($1,$2,$3);",
+	rq_box = append(nonce[:], rq_box...)
+	_, err = dn.db.Exec("INSERT INTO transaction_queue(round,introducer,request) VALUES($1,$2,$3);",
 		round, dn.us.index, rq_box)
 	if err != nil {
 		log.Print(round, dn.us.index, rq_box)
