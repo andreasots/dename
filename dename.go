@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 	"sort"
+	"encoding/binary"
 
 	"code.google.com/p/goprotobuf/proto"
 	"github.com/andres-erbsen/sgp"
@@ -259,16 +260,20 @@ func (dn *Dename) ReadQueue(round int, server int) *Queue {
 		}
 		Q.Entries = append(Q.Entries, transaction)
 	}
-	log.Printf("Queue of %d at %d has %d entries",server,round,len(Q.Entries))
+	// log.Printf("Queue of %d at %d has %d entries",server,round,len(Q.Entries))
 	return Q
 }
 
-func HashQueue(Q *Queue) (cdata []byte, err error) {
+func HashKeyAndQueue(key []byte, Q *Queue) (cdata []byte, err error) {
 	Q_bytes, err := proto.Marshal(Q)
 	if err != nil {
 		return
 	}
 	h := sha256.New()
+	_, err = h.Write(key)
+	if err != nil {
+		return
+	}
 	_, err = h.Write(Q_bytes)
 	if err != nil {
 		return
@@ -276,24 +281,22 @@ func HashQueue(Q *Queue) (cdata []byte, err error) {
 	return h.Sum(nil), nil
 }
 
-func QueueToCommitdata(Q *Queue) (cdata []byte, err error) {
-	qh, err := HashQueue(Q)
+func (dn *Dename) Tick(round int) {
+	log.Print("Round ", round, " ended")
+	//===== Commit to the queue and round key =====//
+	var our_round_key []byte
+	err := dn.db.QueryRow(`SELECT key FROM round_keys WHERE
+			server = $1 AND round = $2;`, dn.us.index, round).Scan(&our_round_key)
+	if err != nil {
+		log.Fatalf("Cannot extract our round %d key: %f",round,err)
+	}
+	Q := dn.ReadQueue(round, dn.us.index)
+	qh, err := HashKeyAndQueue(our_round_key, Q)
 	if err != nil {
 		return
 	}
 	C := &Commitment{Round: Q.Round, Server: Q.Server, QueueHash: qh}
-	cdata, err = proto.Marshal(C)
-	if err != nil {
-		cdata = nil
-	}
-	return
-}
-
-func (dn *Dename) Tick(round int) {
-	log.Print("Round ", round, " ended")
-	//===== Commit to the queue =====//
-	Q := dn.ReadQueue(round, dn.us.index)
-	commitdata, err := QueueToCommitdata(Q)
+	commitdata, err := proto.Marshal(C)
 	if err != nil {
 		log.Fatal("Serialize commitment data: ", err)
 	}
@@ -364,48 +367,12 @@ func (dn *Dename) Tick(round int) {
 		if acks_remaining == 0 {
 			break
 		}
-		log.Print(a, " @ ", c, "; need ", acks_remaining, " more")
+		// log.Print(a, " @ ", c, "; need ", acks_remaining, " more")
 	}
 	quit <- struct{}{}
 
-	//===== Check the commitments =====//
-	queue := make([]*Queue, n)
-	queueOk := make([]bool, n)
-	for i := range(dn.peers) {
-		go func(i int) {
-			var err error
-			queue[i] = dn.ReadQueue(round, i)
-			qh, err := HashQueue(queue[i])
-			if err != nil {
-				log.Fatal("Cannot hash queue: ", err)
-			}
-			queueOk[i] = bytes.Equal(qh, queueHash[i])
-			if ! queueOk[i] {
-				log.Printf("%s\n%s\n%s", queue[i], qh, queueHash[i])
-			}
-			quit <- struct{}{}
-		}(i)
-	}
-	for _ = range(dn.peers) {
-		<- quit
-	}
-	all_ok := true
-	for i := range(dn.peers) {
-		all_ok = all_ok && queueOk[i]
-	}
-	if ! all_ok {
-		log.Fatal("The commitments do not check out: ", queueOk)
-	}
-	log.Print("All commitments verified")
-
 	//===== Broadcast our round key =====//
-	var key []byte
-	err = dn.db.QueryRow(`SELECT key FROM round_keys WHERE
-			server = $1 AND round = $2;`, dn.us.index, round).Scan(&key)
-	if err != nil {
-		log.Fatalf("Cannot extract our round %d key: %f",round,err)
-	}
-	msg, err := proto.Marshal(roundKey(round, dn.us.index, key))
+	msg, err := proto.Marshal(roundKey(round, dn.us.index, our_round_key))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -415,6 +382,7 @@ func (dn *Dename) Tick(round int) {
 	hasKeyed := make([]bool, n)
 	roundKeys := make([][32]byte, n)
 	keys_remaining := n
+	random_seed := int64(0)
 
 	rows, err = dn.db.Query("SELECT server,key FROM round_keys WHERE round = $1", round)
 	if err != nil {
@@ -439,17 +407,62 @@ func (dn *Dename) Tick(round int) {
 	}()
 
 	for keying := range dn.keys_for_consensus {
-		log.Print("Round key from ", *keying.Server)
+		// log.Print("Round key from ", *keying.Server)
+		if keying.GetRound() != int64(round) {
+			continue
+		}
 		if ! hasKeyed[*keying.Server] {
+			if len(keying.Key) != 32 {
+				log.Fatal("Key of wrong size from %d", *keying.Server)
+			}
 			keys_remaining--
 			hasKeyed[*keying.Server] = true
 			copy(roundKeys[*keying.Server][:], keying.Key)
+			var a int64
+			err = binary.Read(bytes.NewBuffer(keying.Key), binary.LittleEndian, &a)
+			if err != nil {
+				log.Fatal("Cannot read int64LE from key ", err)
+			}
+			random_seed ^= a
+		} else if ! bytes.Equal(roundKeys[*keying.Server][:], keying.Key) {
+			log.Print(len(roundKeys[*keying.Server][:]), len(keying.Key))
+			log.Fatalf("Multiple round keys from %d in round %d", *keying.Server, round)
 		}
 		if keys_remaining == 0 {
 			break
 		}
 	}
 	quit <- struct{}{}
+
+	//===== Check the commitments =====//
+	queue := make([]*Queue, n)
+	queueOk := make([]bool, n)
+	for i := range(dn.peers) {
+		go func(i int) {
+			var err error
+			queue[i] = dn.ReadQueue(round, i)
+			qh, err := HashKeyAndQueue(roundKeys[i][:], queue[i])
+			if err != nil {
+				log.Fatal("Cannot hash queue: ", err)
+			}
+			queueOk[i] = bytes.Equal(qh, queueHash[i])
+			if ! queueOk[i] {
+				log.Printf("%d has bad queue hash", i)
+			}
+			quit <- struct{}{}
+		}(i)
+	}
+	for _ = range(dn.peers) {
+		<- quit
+	}
+	all_ok := true
+	for i := range(dn.peers) {
+		all_ok = all_ok && queueOk[i]
+	}
+	if ! all_ok {
+		log.Fatal("The commitments do not check out: ", queueOk)
+	}
+	log.Print("All commitments verified")
 
 	//===== Decrypt the queues =====//
 	peers_rq := make([]map[string][]byte, n)
@@ -472,7 +485,7 @@ func (dn *Dename) Tick(round int) {
 							name,i,round)
 				}
 				if _, present := peers_rq[i][name]; present {
-					log.Fatal("Multiple requests for \"%s\" from %d in round %d",
+					log.Fatalf("Multiple requests for \"%s\" from %d in round %d",
 							name,i,round)
 				}
 				peers_rq[i][name] = rq_bs
@@ -483,15 +496,20 @@ func (dn *Dename) Tick(round int) {
 	for _ = range(dn.peers) {
 		<- quit
 	}
-	name_rq := make(map[string][][]byte)
+
+	//===== Resolve conflicts =====//
+	name_rqs := make(map[string][][]byte)
 	for i := range(dn.peers) {
 		for name, rq_bs := range(peers_rq[i]) {
-			name_rq[name] = append(name_rq[name], rq_bs)
+			name_rqs[name] = append(name_rqs[name], rq_bs)
 		}
 	}
-	for name, rqs := range(name_rq) {
+	name_rq := make(map[string][]byte)
+	for name, rqs := range(name_rqs) {
 		ByteSlices(rqs).Sort()
-		log.Print("Name \"",name, "\" transferred")
+		d := uint64(random_seed) % uint64(len(rqs))
+		name_rq[name] = rqs[d]
+		log.Printf("Name \"%s\" transferred by option %d of %d",name, d+1, len(rqs))
 	}
 
 	log.Print("end dn.Tick(", round, ")")

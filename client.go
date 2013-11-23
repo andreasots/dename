@@ -65,7 +65,6 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 	if err != nil {
 		return
 	}
-	log.Print("valid transfer of \"", name, "\"")
 
 	// Look up the key we use to encrypt this round's queue messages
 	var key_slice []byte
@@ -77,6 +76,25 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 	}
 	key := new([32]byte)
 	copy(key[:], key_slice)
+
+	// Have we already accpedted a request to transfer this name this round
+	var present int
+	err = dn.db.QueryRow(`SELECT count(*) FROM names_we_transfer WHERE round =
+			$1 AND name = $2`, round, name).Scan(&present)
+	if err != nil {
+		log.Fatal("Cannot check whether name is present: ", err)
+	}
+
+	if present != 0 {
+		log.Print("Ignoring repeated transfer of \"", name, "\"")
+		return
+	}
+	log.Print("Valid transfer of \"", name, "\"")
+
+	if _, err = dn.db.Exec("INSERT INTO names_we_transfer(name,round) VALUES($1,$2);",
+		name, round); err != nil {
+		log.Fatalf("Cannot insert \"%f\" to names_we_transfer: %f", name, err)
+	}
 
 	nonce := new([24]byte)
 	_, err = io.ReadFull(rand.Reader, nonce[:])

@@ -34,6 +34,16 @@ func (dn *Dename) CreateTables() {
 		log.Fatal("Cannot create table round_keys: ", err)
 	}
 
+	// names_we_transfer
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS names_we_transfer (
+		id serial not null primary key,
+		round integer not null,
+		name bytea not null,
+		FOREIGN KEY(round) REFERENCES rounds(id));`)
+	if err != nil {
+		log.Fatal("Cannot create table names_we_transfer: ", err)
+	}
+
 	// transaction_queue
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS transaction_queue (
 		id serial not null primary key,

@@ -100,7 +100,7 @@ func (peer *Peer) CloseConn() {
 
 func (dn *Dename) HandleBroadcasts() {
 	for msg := range dn.peer_broadcast {
-		log.Print("broadcast ", len(msg), " bytes")
+		// log.Print("broadcast ", len(msg), " bytes")
 		for _, peer := range dn.addr2peer {
 			peer.RLock()
 			conn := peer.conn
