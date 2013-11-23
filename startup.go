@@ -7,32 +7,32 @@ import (
 	_ "github.com/bmizerany/pq"
 	"log"
 	"net"
-	"time"
 	"sort"
+	"time"
 
-	"github.com/andres-erbsen/sgp"
 	"code.google.com/p/gcfg"
+	"github.com/andres-erbsen/sgp"
 )
 
 type Cfg struct {
-    General struct {
-		Host string
+	General struct {
+		Host          string
 		SecretKeyFile string
 	}
 
-    Peer map[string]*struct {
-        Host string
-    }
-    Database struct {
-		Name string
-	    Host string
-		Port string
+	Peer map[string]*struct {
+		Host string
+	}
+	Database struct {
+		Name     string
+		Host     string
+		Port     string
 		Username string
 		Password string
-    }
-    Genesis struct {
+	}
+	Genesis struct {
 		Time int64
-    }
+	}
 }
 
 func main() {
@@ -54,7 +54,7 @@ func dename(cfg *Cfg) {
 		acks_for_consensus: make(chan VerifiedAckedCommitment),
 		keys_for_consensus: make(chan *RoundKey)}
 
-	dn.db, err = sql.Open("postgres", "user="+cfg.Database.Username+" password="+cfg.Database.Password +" dbname="+cfg.Database.Name+" sslmode=disable")
+	dn.db, err = sql.Open("postgres", "user="+cfg.Database.Username+" password="+cfg.Database.Password+" dbname="+cfg.Database.Name+" sslmode=disable")
 	if err != nil {
 		log.Fatalf("Cannot open database: %f", err)
 	}
@@ -67,15 +67,15 @@ func dename(cfg *Cfg) {
 	}
 
 	// sort the peers by public keys
-    peer_b64_pks := make([]string, len(cfg.Peer))
-    i := 0
-    for k, _ := range cfg.Peer {
-        peer_b64_pks[i] = k
-        i++
-    }
-    sort.Strings(peer_b64_pks)
-	
-	for i, pk_b64 := range(peer_b64_pks) {
+	peer_b64_pks := make([]string, len(cfg.Peer))
+	i := 0
+	for k, _ := range cfg.Peer {
+		peer_b64_pks[i] = k
+		i++
+	}
+	sort.Strings(peer_b64_pks)
+
+	for i, pk_b64 := range peer_b64_pks {
 		host := cfg.Peer[pk_b64].Host
 		pk_bytes, err := base64.StdEncoding.DecodeString(pk_b64)
 		if err != nil {
