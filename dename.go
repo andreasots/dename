@@ -52,7 +52,7 @@ type VerifiedAckedCommitment struct {
 func (dn *Dename) HandleMessage(peer *Peer, msg []byte) (err error) {
 	// log.Print("Received ", len(msg), " bytes from ", peer.addr)
 	if msg[0] == 1 {
-		_, err = dn.db.Exec("INSERT INTO transaction_queue(round,introducer,request) SELECT MAX(id),?,? FROM rounds;", peer.index, msg[1:])
+		_, err = dn.db.Exec("INSERT INTO transaction_queue(round,introducer,request) SELECT MAX(id),$1,$2 FROM rounds;", peer.index, msg[1:])
 		if err != nil {
 			log.Fatal("Cannot insert new transaction to queue: ", err)
 		}
@@ -160,7 +160,7 @@ func (dn *Dename) HandleAck(peer *Peer, signed_ack []byte) (err error) {
 	}
 	_, err = dn.db.Exec(`INSERT INTO
 			commitments(round,commiter,acknowledger,signature)
-			VALUES(?,?,?,?)`,
+			VALUES($1,$2,$3,$4)`,
 		commitment.Round, commitment.Server, peer.index, signed_ack)
 	// log.Print(peer.index, " acked ", *commitment.Server, " (round ", *commitment.Round, ")")
 	log.Print("Ack ", *commitment.Server, " from ", peer.index)
@@ -200,12 +200,12 @@ func (dn *Dename) NextRound(round int, end time.Time) (err error) {
 	if err != nil {
 		return
 	}
-	_, err = tx.Exec("INSERT INTO rounds(id, end_time) VALUES(?,?)", round, end.Unix())
+	_, err = tx.Exec("INSERT INTO rounds(id, end_time) VALUES($1,$2)", round, end.Unix())
 	if err != nil {
 		tx.Rollback()
 		log.Fatal("Cannot insert to table rounds: ", err)
 	}
-	_, err = tx.Exec("INSERT INTO round_keys(round,server,key) VALUES(?,?,?)",
+	_, err = tx.Exec("INSERT INTO round_keys(round,server,key) VALUES($1,$2,$3)",
 		round, dn.us.index, key[:])
 	if err != nil {
 		tx.Rollback()
@@ -219,7 +219,7 @@ func (dn *Dename) ReadQueue(round int) *Queue {
 	round_, server_ := int64(round), int64(dn.us.index)
 	Q := &Queue{Round: &round_, Server: &server_, Entries: make([][]byte, 1)}
 	rows, err := dn.db.Query(`SELECT request FROM transaction_queue WHERE round
-			= ? AND introducer = ? ORDER BY id`, round, dn.us.index)
+			= $1 AND introducer = $2 ORDER BY id`, round, dn.us.index)
 	if err != nil {
 		log.Fatal("Cannot load transactions for tick: ", err)
 	}
@@ -276,7 +276,7 @@ func (dn *Dename) Tick(round int) {
 	}
 	acks_remaining := n * n
 
-	rows, err := dn.db.Query("SELECT commiter,acknowledger,signature FROM commitments WHERE round = ?", round)
+	rows, err := dn.db.Query("SELECT commiter,acknowledger,signature FROM commitments WHERE round = $1", round)
 	if err != nil {
 		log.Fatal("Cannot load commitments for round ", round, ": ", err)
 	}

@@ -4,22 +4,47 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/base64"
-	"fmt"
-	_ "github.com/mattn/go-sqlite3"
-	"io"
+	_ "github.com/bmizerany/pq"
 	"log"
 	"net"
-	"os"
 	"time"
+	"sort"
 
 	"github.com/andres-erbsen/sgp"
+	"code.google.com/p/gcfg"
 )
 
-func main() {
-	if len(os.Args) != 2 && len(os.Args) != 3 {
-		log.Fatal("USAGE: ", os.Args[0], " LOCALIP [STARTTIME]")
+type Cfg struct {
+    General struct {
+		Host string
+		SecretKeyFile string
 	}
 
+    Peer map[string]*struct {
+        Host string
+    }
+    Database struct {
+		Name string
+	    Host string
+		Port string
+		Username string
+		Password string
+    }
+    Genesis struct {
+		Time int64
+    }
+}
+
+func main() {
+	cfg := new(Cfg)
+	err := gcfg.ReadFileInto(cfg, "dename.cfg")
+	if err != nil {
+		log.Fatalf("Failed to parse gcfg data: %s", err)
+	}
+	dename(cfg)
+}
+
+func dename(cfg *Cfg) {
 	var err error
 	dn := &Dename{
 		addr2peer: make(map[string]*Peer),
@@ -27,57 +52,50 @@ func main() {
 
 		peer_broadcast:     make(chan []byte),
 		acks_for_consensus: make(chan VerifiedAckedCommitment)}
-	dn.db, err = sql.Open("sqlite3", "file:dename.db?cache=shared")
+
+	dn.db, err = sql.Open("postgres", "user="+cfg.Database.Username+" password="+cfg.Database.Password +" dbname="+cfg.Database.Name+" sslmode=disable")
 	if err != nil {
-		log.Fatal("Cannot open dename.db", err)
+		log.Fatalf("Cannot open database: %f", err)
 	}
 	defer dn.db.Close()
 	dn.CreateTables()
 
-	dn.our_sk, err = sgp.LoadSecretKeyFromFile("sk")
+	dn.our_sk, err = sgp.LoadSecretKeyFromFile(cfg.General.SecretKeyFile)
 	if err != nil {
 		log.Fatal("Cannot load secret key from \"sk\"", err)
 	}
 
-	peersfile, err := os.Open("peers.txt")
-	if err != nil {
-		log.Fatal("Cannot open peers.txt", err)
-	}
-
-	for i := 0; ; i++ {
-		var host, pk_type, pk_b64 string
-		_, err := fmt.Fscanf(peersfile, "%s %s %s\n", &host, &pk_type, &pk_b64)
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			log.Fatal("Syntax error in peers.txt on line ", i, ":", err)
-		}
-		if pk_type != "sgp" {
-			log.Fatal("pk_type != sgp in peers.txt on line ", i)
-		}
+	// sort the peers by public keys
+    peer_b64_pks := make([]string, len(cfg.Peer))
+    i := 0
+    for k, _ := range cfg.Peer {
+        peer_b64_pks[i] = k
+        i++
+    }
+    sort.Strings(peer_b64_pks)
+	
+	for i, pk_b64 := range(peer_b64_pks) {
+		host := cfg.Peer[pk_b64].Host
 		pk_bytes, err := base64.StdEncoding.DecodeString(pk_b64)
 		if err != nil {
-			log.Fatal("Bad base64 in peers.txt on line ", i)
+			log.Fatalf("Bad base64 as public key: %f (for %f)", err, host)
 		}
 
 		pk := &sgp.Entity{}
 		err = pk.Parse(pk_bytes)
 		if err != nil {
-			log.Fatal("Bad pk in peers.txt on line ", i, " for ", host, ": ", err)
+			log.Fatal("Bad pk: %f (for %f)", err, host)
 		}
 		addr_struct, err := net.ResolveIPAddr("", host)
 		if err != nil {
-			log.Fatal("Cannot lookup ", host, err)
+			log.Fatal("Cannot look up ", host, err)
 		}
 		addr := addr_struct.String()
 		dn.addr2peer[addr] = &Peer{index: i, addr: addr, pk: pk}
 		dn.peers[i] = dn.addr2peer[addr]
 
-		_, err = dn.db.Exec("INSERT OR IGNORE INTO servers(id) VALUES(?)", i)
-		if err != nil {
-			log.Fatal("Cannot insert server ", i, ": ", err)
-		}
+		dn.db.Exec("INSERT INTO servers(id) VALUES($1)", i)
+		// TODO: should we catch any errors here?
 
 		if bytes.Equal(dn.our_sk.Entity.Bytes, pk_bytes) { // this entry refers to us
 			dn.us = dn.peers[i]
@@ -92,6 +110,9 @@ func main() {
 	}
 
 	for _, peer := range dn.peers {
+		if peer == dn.us {
+			continue
+		}
 		laddr := &net.TCPAddr{IP: laddr_ip.IP}
 
 		raddr, err := net.ResolveTCPAddr("tcp", peer.addr+":"+S2S_PORT)
@@ -110,34 +131,15 @@ func main() {
 	if dn.us.index == -1 {
 		log.Fatal("We are not on the peers list")
 	}
-	if len(os.Args) >= 2 {
-		dn.us.addr = os.Args[1]
-	}
 
 	round := -1 // -1 is a dummy round before the beginning of time.
-	var round_end_u int64
-	var round_end time.Time
+	round_end_u := cfg.Genesis.Time
 	err = dn.db.QueryRow("SELECT id,end_time FROM rounds ORDER BY id DESC LIMIT 1").Scan(&round, &round_end_u)
 	if err != nil && err != sql.ErrNoRows {
 		log.Fatal("Cannot read table rounds: ", err)
 	}
-	if round == -1 {
-		if len(os.Args) < 3 {
-			log.Fatal("Need to specify start itme of first round")
-		}
-		reftime, _ := time.Parse("", "")
-		intime, err := time.Parse("15:04:05", os.Args[2])
-		if err != nil {
-			log.Fatal("Bad time input")
-		}
-		round_end = time.Now().Truncate(24 * time.Hour).Add(intime.Sub(reftime))
-		log.Print("First round will end at ", round_end)
-	} else {
-		if len(os.Args) > 2 {
-			log.Fatal("Extroneous start time of first round")
-		}
-		round_end = time.Unix(round_end_u, 0)
-	}
+
+	round_end := time.Unix(round_end_u, 0)
 	go dn.WaitForTicks(round, round_end)
 
 	go dn.HandleBroadcasts()
