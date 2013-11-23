@@ -190,7 +190,6 @@ func (dn *Dename) HandleRoundKey(peer *Peer, rk_msg []byte) (err error) {
 	}
 	_, err = dn.db.Exec(`INSERT INTO round_keys(round,server,key)
 			VALUES($1,$2,$3)`, int(rk_pb.GetRound()), peer.index, rk_pb.Key)
-	log.Print("Round key from ", peer.index)
 	go func() { // for efficency, one would use ana ctual elastic buffer channel
 		dn.keys_for_consensus <- rk_pb
 	}()
@@ -241,11 +240,11 @@ func (dn *Dename) NextRound(round int, end time.Time) (err error) {
 	return
 }
 
-func (dn *Dename) ReadQueue(round int) *Queue {
-	round_, server_ := int64(round), int64(dn.us.index)
-	Q := &Queue{Round: &round_, Server: &server_, Entries: make([][]byte, 1)}
+func (dn *Dename) ReadQueue(round int, server int) *Queue {
+	round_, server_ := int64(round), int64(server)
+	Q := &Queue{Round: &round_, Server: &server_, Entries: make([][]byte,0,1)}
 	rows, err := dn.db.Query(`SELECT request FROM transaction_queue WHERE round
-			= $1 AND introducer = $2 ORDER BY id`, round, dn.us.index)
+			= $1 AND introducer = $2 ORDER BY id`, round, server)
 	if err != nil {
 		log.Fatal("Cannot load transactions for tick: ", err)
 	}
@@ -258,10 +257,11 @@ func (dn *Dename) ReadQueue(round int) *Queue {
 		}
 		Q.Entries = append(Q.Entries, transaction)
 	}
+	log.Printf("Queue of %d at %d has %d entries",server,round,len(Q.Entries))
 	return Q
 }
 
-func QueueToCommitdata(Q *Queue) (cdata []byte, err error) {
+func HashQueue(Q *Queue) (cdata []byte, err error) {
 	Q_bytes, err := proto.Marshal(Q)
 	if err != nil {
 		return
@@ -271,7 +271,15 @@ func QueueToCommitdata(Q *Queue) (cdata []byte, err error) {
 	if err != nil {
 		return
 	}
-	C := &Commitment{Round: Q.Round, Server: Q.Server, QueueHash: h.Sum(nil)}
+	return h.Sum(nil), nil
+}
+
+func QueueToCommitdata(Q *Queue) (cdata []byte, err error) {
+	qh, err := HashQueue(Q)
+	if err != nil {
+		return
+	}
+	C := &Commitment{Round: Q.Round, Server: Q.Server, QueueHash: qh}
 	cdata, err = proto.Marshal(C)
 	if err != nil {
 		cdata = nil
@@ -281,8 +289,8 @@ func QueueToCommitdata(Q *Queue) (cdata []byte, err error) {
 
 func (dn *Dename) Tick(round int) {
 	log.Print("Round ", round, " ended")
-	// commit to the current queue
-	Q := dn.ReadQueue(round)
+	//===== Commit to the queue =====//
+	Q := dn.ReadQueue(round, dn.us.index)
 	commitdata, err := QueueToCommitdata(Q)
 	if err != nil {
 		log.Fatal("Serialize commitment data: ", err)
@@ -294,6 +302,7 @@ func (dn *Dename) Tick(round int) {
 	}
 	dn.peer_broadcast <- append([]byte{2}, commitment...)
 
+	//===== Receive commitments and acknowledgements =====//
 	n := len(dn.addr2peer)
 	queueHash := make([][]byte, n)
 	hasAcked := make([][]bool, n)
@@ -306,6 +315,7 @@ func (dn *Dename) Tick(round int) {
 	if err != nil {
 		log.Fatal("Cannot load commitments for round ", round, ": ", err)
 	}
+	quit := make(chan struct{})
 	go func() {
 		defer rows.Close()
 		for rows.Next() {
@@ -313,16 +323,21 @@ func (dn *Dename) Tick(round int) {
 			var ack []byte
 			err = rows.Scan(&c, &a, &ack)
 			if err != nil {
-				log.Fatal("Bad ack in database: ", err)
+				log.Fatal("Cannot load ack from database: ", err)
 			}
 			commitment, err := dn.UnpackAckCommitment(c, a, ack)
 			if err != nil {
 				log.Fatal("Bad ack in database: ", err)
 			}
-			dn.acks_for_consensus <- VerifiedAckedCommitment{
+			select {
+			case dn.acks_for_consensus <- VerifiedAckedCommitment{
 				Commitment:   commitment,
-				Acknowledger: a}
+				Acknowledger: a}:
+			case <- quit:
+				return
+			}
 		}
+		<- quit
 		// log.Print("Loaded all relevant acks from table")
 	}()
 
@@ -335,20 +350,53 @@ func (dn *Dename) Tick(round int) {
 		qh := ack.Commitment.QueueHash
 		if queueHash[c] == nil {
 			queueHash[c] = qh
+		} else {
+			if ! bytes.Equal(queueHash[c], qh) {
+				log.Fatal("Server ", c, " commited to multiple things")
+			}
 		}
-		if !bytes.Equal(queueHash[c], qh) {
-			log.Fatal("Server ", c, " commited to multiple things")
-		}
-		if !hasAcked[a][c] {
+		if ! hasAcked[a][c] {
 			acks_remaining--
+			hasAcked[a][c] = true
 		}
-		hasAcked[a][c] = true
 		if acks_remaining == 0 {
 			break
 		}
 		log.Print(a, " @ ", c, "; need ", acks_remaining, " more")
 	}
+	quit <- struct{}{}
 
+	//===== Check the commitments =====//
+	queue := make([]*Queue, n)
+	queueOk := make([]bool, n)
+	checked := make(chan struct{})
+	for i := range(dn.peers) {
+		go func(i int){
+			queue[i] = dn.ReadQueue(round, i)
+			qh, err := HashQueue(queue[i])
+			if err != nil {
+				log.Fatal("Cannot hash queue: ", err)
+			}
+			queueOk[i] = bytes.Equal(qh, queueHash[i])
+			if ! queueOk[i] {
+				log.Printf("%s\n%s\n%s", queue[i], qh, queueHash[i])
+			}
+			checked <- struct{}{}
+		}(i)
+	}
+	for _ = range(dn.peers) {
+		<- checked
+	}
+	all_ok := true
+	for i := range(dn.peers) {
+		all_ok = all_ok && queueOk[i]
+	}
+	if ! all_ok {
+		log.Fatal("The commitments do not check out: ", queueOk)
+	}
+	log.Print("All commitments verified")
+
+	//===== Broadcast our round key =====//
 	var key []byte
 	err = dn.db.QueryRow(`SELECT key FROM round_keys WHERE
 			server = $1 AND round = $2;`, dn.us.index, round).Scan(&key)
@@ -361,6 +409,7 @@ func (dn *Dename) Tick(round int) {
 	}
 	dn.peer_broadcast <- append([]byte{4}, msg...)
 
+	//===== Receive round keys =====//
 	hasKeyed := make([]bool, n)
 	keys_remaining := n
 
@@ -375,13 +424,19 @@ func (dn *Dename) Tick(round int) {
 			var server int
 			err = rows.Scan(&server, &key)
 			if err != nil {
-				log.Fatal("Bad ack in database: ", err)
+				log.Fatal("Cannot load key from database: ", err)
 			}
-			dn.keys_for_consensus <- roundKey(round,server, key)
+			select {
+			case dn.keys_for_consensus <- roundKey(round,server, key):
+			case <- quit:
+				return
+			}
 		}
+		<- quit
 	}()
 
 	for keying := range dn.keys_for_consensus {
+		log.Print("Round key from ", *keying.Server)
 		if ! hasKeyed[*keying.Server] {
 			keys_remaining--
 			hasKeyed[*keying.Server] = true
@@ -390,6 +445,7 @@ func (dn *Dename) Tick(round int) {
 			break
 		}
 	}
+	quit <- struct{}{}
 
 	log.Print("end dn.Tick(", round, ")")
 }
