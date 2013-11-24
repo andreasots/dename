@@ -44,6 +44,7 @@ type Dename struct {
 
 	peer_lnr   *net.TCPListener
 	client_lnr net.Listener
+	RoundForClients sync.RWMutex
 
 	peer_broadcast     chan []byte
 	acks_for_consensus chan VerifiedAckedCommitment
@@ -59,10 +60,7 @@ func (dn *Dename) HandleMessage(peer *Peer, msg []byte) (err error) {
 	// log.Print("Received ", len(msg), " bytes from ", peer.addr)
 	switch msg[0] {
 	case 1:
-		_, err = dn.db.Exec("INSERT INTO transaction_queue(round,introducer,request) SELECT MAX(id),$1,$2 FROM rounds;", peer.index, msg[1:])
-		if err != nil {
-			log.Fatal("Cannot insert new transaction to queue: ", err)
-		}
+		return dn.HandlePush(peer, msg[1:])
 	case 2:
 		return dn.HandleCommitment(peer, msg[1:])
 	case 3:
@@ -71,6 +69,20 @@ func (dn *Dename) HandleMessage(peer *Peer, msg []byte) (err error) {
 		return dn.HandleRoundKey(peer, msg[1:])
 	default:
 		log.Print("Unknown message of type ", msg[0], " from ", peer.index)
+	}
+	return
+}
+func (dn *Dename) HandlePush(peer *Peer, rq []byte) (err error) {
+	buf := bytes.NewBuffer(rq)
+	var round uint64
+	err = binary.Read(buf, binary.LittleEndian, &round)	
+	if err != nil {
+		return
+	}
+	_, err = dn.db.Exec(`INSERT INTO transaction_queue(round,introducer,request)
+			VALUES($1,$2,$3);`, round, peer.index, rq[8:])
+	if err != nil {
+		log.Fatal("Cannot insert new transaction to queue: ", err)
 	}
 	return
 }
@@ -220,6 +232,8 @@ func (dn *Dename) WaitForTicks(round int, end time.Time) (err error) {
 }
 
 func (dn *Dename) NextRound(round int, end time.Time) (err error) {
+	dn.RoundForClients.Lock()
+	defer dn.RoundForClients.Unlock()
 	var key [32]byte
 	_, err = io.ReadFull(rand.Reader, key[:])
 	if err != nil {
@@ -261,7 +275,7 @@ func (dn *Dename) ReadQueue(round int, server int) *Queue {
 		}
 		Q.Entries = append(Q.Entries, transaction)
 	}
-	// log.Printf("Queue of %d at %d has %d entries",server,round,len(Q.Entries))
+	log.Printf("Queue of %d at %d has %d entries",server,round,len(Q.Entries))
 	return Q
 }
 

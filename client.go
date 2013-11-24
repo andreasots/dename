@@ -9,6 +9,8 @@ import (
 	"io/ioutil"
 	"log"
 	"net"
+	"encoding/binary"
+	"bytes"
 
 	"code.google.com/p/goprotobuf/proto"
 	"github.com/andres-erbsen/sgp"
@@ -66,6 +68,9 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 		return
 	}
 
+	dn.RoundForClients.RLock()
+	defer dn.RoundForClients.RUnlock()
+
 	// Look up the key we use to encrypt this round's queue messages
 	var key_slice []byte
 	var round int
@@ -111,5 +116,9 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 		log.Print(round, dn.us.index, rq_box)
 		log.Fatal("Cannot insert new transaction to queue: ", err)
 	}
-	dn.peer_broadcast <- append([]byte{1}, rq_box...)
+	mb := new(bytes.Buffer)
+	mb.WriteByte(1)
+	binary.Write(mb, binary.LittleEndian, uint64(round))
+	mb.Write(rq_box)
+	dn.peer_broadcast <- mb.Bytes()
 }
