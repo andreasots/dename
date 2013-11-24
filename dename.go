@@ -275,6 +275,7 @@ func (dn *Dename) ReadQueue(round int, server int) *Queue {
 		}
 		Q.Entries = append(Q.Entries, transaction)
 	}
+	ByteSlices(Q.Entries).Sort()
 	log.Printf("Queue of %d at %d has %d entries",server,round,len(Q.Entries))
 	return Q
 }
