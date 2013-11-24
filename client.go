@@ -1,16 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"code.google.com/p/go.crypto/nacl/secretbox"
 	"crypto/rand"
 	"database/sql"
+	"encoding/binary"
 	_ "github.com/mattn/go-sqlite3"
 	"io"
 	"io/ioutil"
 	"log"
 	"net"
-	"encoding/binary"
-	"bytes"
 
 	"code.google.com/p/goprotobuf/proto"
 	"github.com/andres-erbsen/sgp"
@@ -73,7 +73,7 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 
 	// Look up the key we use to encrypt this round's queue messages
 	var key_slice []byte
-	var round int
+	var round int64
 	err = dn.db.QueryRow(`SELECT round,key FROM round_keys WHERE server = $1 ORDER
 			BY id DESC LIMIT 1;`, dn.us.index).Scan(&round, &key_slice)
 	if err != nil {

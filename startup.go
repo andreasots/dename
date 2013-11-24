@@ -133,15 +133,22 @@ func dename(cfg *Cfg) {
 		log.Fatal("We are not on the peers list")
 	}
 
-	round := -1 // -1 is a dummy round before the beginning of time.
-	round_end_u := cfg.Genesis.Time
+	var round, round_end_u int64
 	err = dn.db.QueryRow("SELECT id,end_time FROM rounds ORDER BY id DESC LIMIT 1").Scan(&round, &round_end_u)
-	if err != nil && err != sql.ErrNoRows {
+	if err == sql.ErrNoRows {
+		round = 0
+		round_end_u = cfg.Genesis.Time
+		_, err = dn.db.Exec(`INSERT INTO rounds(id, end_time)
+			VALUES($1,$2)`, round, round_end_u)
+		if err != nil {
+			log.Fatal("Cannot insert round 0: ", err)
+		}
+		dn.NextRound(round, time.Unix(round_end_u, 0))
+	} else if err != nil {
 		log.Fatal("Cannot read table rounds: ", err)
 	}
 
-	round_end := time.Unix(round_end_u, 0)
-	go dn.WaitForTicks(round, round_end)
+	go dn.WaitForTicks(round, time.Unix(round_end_u, 0))
 
 	go dn.HandleBroadcasts()
 
@@ -155,9 +162,6 @@ func dename(cfg *Cfg) {
 	}
 	go dn.ListenForPeers()
 
-	if round == -1 { // wait for the dummy round to end before accepting clients
-		time.Sleep(time.Now().Sub(round_end))
-	}
 	dn.client_lnr, err = net.Listen("tcp", dn.us.addr+":6263")
 	if err != nil {
 		log.Fatal(err)

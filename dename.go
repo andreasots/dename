@@ -42,8 +42,8 @@ type Dename struct {
 	peers     map[int]*Peer
 	addr2peer map[string]*Peer
 
-	peer_lnr   *net.TCPListener
-	client_lnr net.Listener
+	peer_lnr        *net.TCPListener
+	client_lnr      net.Listener
 	RoundForClients sync.RWMutex
 
 	peer_broadcast     chan []byte
@@ -75,7 +75,7 @@ func (dn *Dename) HandleMessage(peer *Peer, msg []byte) (err error) {
 func (dn *Dename) HandlePush(peer *Peer, rq []byte) (err error) {
 	buf := bytes.NewBuffer(rq)
 	var round uint64
-	err = binary.Read(buf, binary.LittleEndian, &round)	
+	err = binary.Read(buf, binary.LittleEndian, &round)
 	if err != nil {
 		return
 	}
@@ -212,7 +212,7 @@ func (dn *Dename) HandleRoundKey(peer *Peer, rk_msg []byte) (err error) {
 	return
 }
 
-func (dn *Dename) WaitForTicks(round int, end time.Time) (err error) {
+func (dn *Dename) WaitForTicks(round int64, end time.Time) (err error) {
 	for {
 		log.Print(round, time.Now().Second(), end.Second())
 		if time.Now().After(end) {
@@ -231,25 +231,28 @@ func (dn *Dename) WaitForTicks(round int, end time.Time) (err error) {
 	}
 }
 
-func (dn *Dename) NextRound(round int, end time.Time) (err error) {
-	dn.RoundForClients.Lock()
-	defer dn.RoundForClients.Unlock()
+func (dn *Dename) NextRound(round int64, end time.Time) (err error) {
 	var key [32]byte
 	_, err = io.ReadFull(rand.Reader, key[:])
 	if err != nil {
 		return
 	}
+	dn.RoundForClients.Lock()
+	defer dn.RoundForClients.Unlock()
 	tx, err := dn.db.Begin()
 	if err != nil {
 		return
 	}
-	_, err = tx.Exec("INSERT INTO rounds(id, end_time) VALUES($1,$2)", round, end.Unix())
+	// to accept pushes into next round from peers
+	_, err = tx.Exec(`INSERT INTO rounds(id, end_time)
+		VALUES($1,$2)`, round+1, end.Unix())
 	if err != nil {
 		tx.Rollback()
 		log.Fatal("Cannot insert to table rounds: ", err)
 	}
-	_, err = tx.Exec("INSERT INTO round_keys(round,server,key) VALUES($1,$2,$3)",
-		round, dn.us.index, key[:])
+	// we put new rq-s to the newest round that has a key
+	_, err = tx.Exec(`INSERT INTO round_keys(round,server,key)
+			VALUES($1,$2,$3)`, round, dn.us.index, key[:])
 	if err != nil {
 		tx.Rollback()
 		return
@@ -258,7 +261,7 @@ func (dn *Dename) NextRound(round int, end time.Time) (err error) {
 	return
 }
 
-func (dn *Dename) ReadQueue(round int, server int) *Queue {
+func (dn *Dename) ReadQueue(round int64, server int) *Queue {
 	round_, server_ := int64(round), int64(server)
 	Q := &Queue{Round: &round_, Server: &server_, Entries: make([][]byte, 0, 1)}
 	rows, err := dn.db.Query(`SELECT request FROM transaction_queue WHERE round
@@ -276,7 +279,7 @@ func (dn *Dename) ReadQueue(round int, server int) *Queue {
 		Q.Entries = append(Q.Entries, transaction)
 	}
 	ByteSlices(Q.Entries).Sort()
-	log.Printf("Queue of %d at %d has %d entries",server,round,len(Q.Entries))
+	log.Printf("Queue of %d at %d has %d entries", server, round, len(Q.Entries))
 	return Q
 }
 
@@ -297,7 +300,7 @@ func HashKeyAndQueue(key []byte, Q *Queue) (cdata []byte, err error) {
 	return h.Sum(nil), nil
 }
 
-func (dn *Dename) Tick(round int) {
+func (dn *Dename) Tick(round int64) {
 	log.Print("Round ", round, " ended")
 	//===== Commit to the queue and round key =====//
 	var our_round_key []byte
@@ -363,7 +366,7 @@ func (dn *Dename) Tick(round int) {
 	}()
 
 	for ack := range dn.acks_for_consensus {
-		if int(*ack.Commitment.Round) != round {
+		if ack.Commitment.GetRound() != round {
 			continue
 		}
 		a := ack.Acknowledger
@@ -531,10 +534,9 @@ func (dn *Dename) Tick(round int) {
 	log.Print("end dn.Tick(", round, ")")
 }
 
-func roundKey(round, server int, key []byte) *RoundKey {
-	round_ := int64(round)
+func roundKey(round int64, server int, key []byte) *RoundKey {
 	server_ := int64(server)
-	return &RoundKey{Round: &round_, Server: &server_, Key: key}
+	return &RoundKey{Round: &round, Server: &server_, Key: key}
 }
 
 type ByteSlices [][]byte
