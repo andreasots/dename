@@ -485,9 +485,11 @@ func (dn *Dename) Tick(round int64) {
 
 	//===== Decrypt the queues =====//
 	peers_rq := make([]map[string][]byte, n)
+	for i := range dn.peers { // only modify peers_rq in the main thread
+		peers_rq[i] = make(map[string][]byte)
+	}
 	for i := range dn.peers {
 		go func(i int) {
-			peers_rq[i] = make(map[string][]byte)
 			var nonce [24]byte
 			for j, rq_box := range queue[i].Entries {
 				copy(nonce[:], rq_box[:24])
