@@ -16,8 +16,8 @@ run_instance() {
 	[[ $config =~ $re ]]
 	dbuser=${BASH_REMATCH[1]}
 
-	sudo -u postgres dropdb $dbname
-	sudo -u postgres createdb $dbname -O $dbuser
+	sudo su - postgres -c "dropdb $dbname"
+	sudo su - postgres -c "createdb $dbname -O $dbuser"
 
 	dename
 }
