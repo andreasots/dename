@@ -104,6 +104,25 @@ func dename(cfg *Cfg) {
 		}
 	}
 
+	var round, round_end_u int64
+	err = dn.db.QueryRow(`SELECT id,end_time FROM rounds WHERE id=(SELECT round
+			FROM round_keys WHERE server = $1 ORDER
+			BY id DESC LIMIT 1);`, dn.us.index).Scan(&round, &round_end_u)
+	if err == nil {
+		log.Printf("Resuming round %d for clients", round)
+	} else if err == sql.ErrNoRows {
+		round = 0
+		round_end_u = cfg.Genesis.Time
+		_, err = dn.db.Exec(`INSERT INTO rounds(id, end_time)
+			VALUES($1,$2)`, round, round_end_u)
+		if err != nil {
+			log.Fatal("Cannot insert round 0: ", err)
+		}
+		dn.NextRound(round, time.Unix(round_end_u, 0))
+	} else if err != nil {
+		log.Fatal("Cannot read table rounds: ", err)
+	}
+
 	// pick an ephermal port with the given ip as local address
 	laddr_ip, err := net.ResolveIPAddr("", dn.us.addr)
 	if err != nil {
@@ -131,21 +150,6 @@ func dename(cfg *Cfg) {
 
 	if dn.us.index == -1 {
 		log.Fatal("We are not on the peers list")
-	}
-
-	var round, round_end_u int64
-	err = dn.db.QueryRow("SELECT id,end_time FROM rounds ORDER BY id DESC LIMIT 1").Scan(&round, &round_end_u)
-	if err == sql.ErrNoRows {
-		round = 0
-		round_end_u = cfg.Genesis.Time
-		_, err = dn.db.Exec(`INSERT INTO rounds(id, end_time)
-			VALUES($1,$2)`, round, round_end_u)
-		if err != nil {
-			log.Fatal("Cannot insert round 0: ", err)
-		}
-		dn.NextRound(round, time.Unix(round_end_u, 0))
-	} else if err != nil {
-		log.Fatal("Cannot read table rounds: ", err)
 	}
 
 	go dn.WaitForTicks(round, time.Unix(round_end_u, 0))
