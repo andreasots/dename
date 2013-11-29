@@ -589,7 +589,7 @@ func (dn *Dename) Tick(round int64) {
 	}
 
 	_, err = dn.db.Exec(`UPDATE rounds SET commit_time = $1
-		WHERE round = $2`, time.Now().Unix(), round)
+		WHERE id = $2`, time.Now().Unix(), round)
 	if err != nil {
 		log.Fatalf("Mark round %d as commited in database: %s", round, err)
 	}
