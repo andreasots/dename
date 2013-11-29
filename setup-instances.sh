@@ -8,27 +8,28 @@ cp dename.cfg $tmp_config
 
 config=$(cat $tmp_config)
 
-re='\[general\].*host = ([0-9.i$]+)'
+re='\[general\].*^host = ([0-9.i$]+)'
 [[ $config =~ $re ]]
 host_pattern=${BASH_REMATCH[1]}
 
-re='\[database\].*name = ([-a-zA-Z0-9$]+)'
+re='\[database\].*^name = ([-a-zA-Z0-9$]+)'
 [[ $config =~ $re ]]
 dbname_pattern=${BASH_REMATCH[1]}
 
-re='\[database\].*username = ([-a-zA-Z0-9$]+)'
+re='\[database\].*^username = ([-a-zA-Z0-9$]+)'
 [[ $config =~ $re ]]
 dbuser_pattern=${BASH_REMATCH[1]}
 
-re='\[database\].*password = ([-a-zA-Z0-9$]+)'
+re='\[database\].*^password = ([-a-zA-Z0-9$]+)'
 [[ $config =~ $re ]]
-dbpassword=${BASH_REMATCH[1]}
+dbpassword_pattern=${BASH_REMATCH[1]}
 
 setup_instance() {
 	mkdir $dir/$1
-	host=$(eval echo $host_pattern)
+	host=$(echo $host_pattern | sed "s/\$1/$((($i+43)))/g")
 	dbname=$(eval echo $dbname_pattern)
 	dbuser=$(eval echo $dbuser_pattern)
+	dbpassword=$(eval echo $dbuser_pattern)
 	sudo ip addr add $host/30 dev lo:$1
 	cmd="
 CREATE ROLE \"$dbuser\" WITH LOGIN PASSWORD '$dbpassword';
@@ -48,5 +49,7 @@ do
 done
 for i in $(seq 1 $count)
 do
-	sed "s/\$1/$i/g" $tmp_config > $dir/$i/dename.cfg
+	host=$(echo $host_pattern | sed "s/\$1/$((($i+43)))/g")
+
+	sed -e "s/$host_pattern/$host/g" -e "s/\$1/$i/g" $tmp_config > $dir/$i/dename.cfg
 done
