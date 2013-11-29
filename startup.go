@@ -104,7 +104,7 @@ func dename(cfg *Cfg) {
 		}
 	}
 
-	var round, round_end_u int64
+	var round, round_end_u int64 // the newest round open for clients
 	err = dn.db.QueryRow(`SELECT id,end_time FROM rounds WHERE id=(SELECT round
 			FROM round_keys WHERE server = $1 ORDER
 			BY id DESC LIMIT 1);`, dn.us.index).Scan(&round, &round_end_u)
@@ -118,7 +118,7 @@ func dename(cfg *Cfg) {
 		if err != nil {
 			log.Fatal("Cannot insert round 0: ", err)
 		}
-		dn.NextRound(round, time.Unix(round_end_u, 0))
+		dn.ClientsToRound(round, time.Unix(round_end_u, 0))
 	} else if err != nil {
 		log.Fatal("Cannot read table rounds: ", err)
 	}
@@ -150,6 +150,19 @@ func dename(cfg *Cfg) {
 
 	if dn.us.index == -1 {
 		log.Fatal("We are not on the peers list")
+	}
+
+	if round > 0 {
+		have_consensus := false
+		err = dn.db.QueryRow(`SELECT (commit_time IS NOT NULL) FROM rounds
+				WHERE id = $1`, round-1).Scan(&have_consensus)
+		if err != nil {
+			log.Fatalf("Check if round %d reached consensus: %s", round-1, err)
+		}
+		if !have_consensus {
+			log.Printf("Running consensus for round %d", round-1)
+			dn.Tick(round - 1)
+		}
 	}
 
 	go dn.WaitForTicks(round, time.Unix(round_end_u, 0))

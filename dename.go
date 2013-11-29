@@ -218,12 +218,11 @@ func (dn *Dename) WaitForTicks(round int64, end time.Time) (err error) {
 		if time.Now().After(end) {
 			end = end.Add(TICK_INTERVAL)
 			round++
-			// switch new requests to the new round first, then finalize the old
-			err = dn.NextRound(round, end)
+			err = dn.ClientsToRound(round, end)
 			if err != nil {
 				log.Fatal("Cannot advance round: ", err)
 			}
-			if round-1 != -1 {
+			if round > 0 {
 				dn.Tick(round - 1)
 			}
 		}
@@ -231,7 +230,7 @@ func (dn *Dename) WaitForTicks(round int64, end time.Time) (err error) {
 	}
 }
 
-func (dn *Dename) NextRound(round int64, end time.Time) (err error) {
+func (dn *Dename) ClientsToRound(round int64, end time.Time) (err error) {
 	var key [32]byte
 	_, err = io.ReadFull(rand.Reader, key[:])
 	if err != nil {
@@ -245,7 +244,7 @@ func (dn *Dename) NextRound(round int64, end time.Time) (err error) {
 	}
 	// to accept pushes into next round from peers
 	_, err = tx.Exec(`INSERT INTO rounds(id, end_time)
-		VALUES($1,$2)`, round+1, end.Unix())
+		VALUES($1,$2)`, round+1, end.Add(TICK_INTERVAL).Unix())
 	if err != nil {
 		tx.Rollback()
 		log.Fatal("Cannot insert to table rounds: ", err)
@@ -588,10 +587,14 @@ func (dn *Dename) Tick(round int64) {
 		log.Printf("Name \"%s\" transferred by option %d of %d", name, d+1, len(rqs))
 	}
 
-	_, err = dn.db.Exec(`UPDATE rounds SET commit_time = $1
-		WHERE id = $2`, time.Now().Unix(), round)
+	r, err := dn.db.Exec(`UPDATE rounds SET commit_time = $1
+		WHERE id = $2 AND commit_time IS NULL`, time.Now().Unix(), round)
 	if err != nil {
 		log.Fatalf("Mark round %d as commited in database: %s", round, err)
+	}
+	n_updates, _ := r.RowsAffected()
+	if n_updates != 1 {
+		log.Fatalf("Wanted to set commit_time for 1 round, hit %d instead", n_updates)
 	}
 
 	log.Print("end dn.Tick(", round, ")")
