@@ -1,5 +1,12 @@
 #!/bin/bash
 
+if [[ $# -ne 2 ]]
+then
+	echo "Usage: ./setup-instances.sh <directory> <count>" >&2
+	exit 1
+fi
+
+
 dir=$1
 count=$2
 
