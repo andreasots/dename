@@ -2,7 +2,8 @@ package main
 
 import (
 	"bytes"
-	_ "github.com/mattn/go-sqlite3"
+	"encoding/binary"
+	"errors"
 	"log"
 	"net"
 	"strings"
@@ -59,8 +60,11 @@ func (dn *Dename) PeerConnected(conn net.Conn) {
 	}
 	peer.closeOnce = new(sync.Once)
 	peer.conn = conn
+	go dn.BringUpToDate(peer)
 	go dn.ReceiveLoop(peer)
 }
+
+const FRAME_SIZE = 1600
 
 func (dn *Dename) ReceiveLoop(peer *Peer) (err error) {
 	peer.RLock()
@@ -69,16 +73,25 @@ func (dn *Dename) ReceiveLoop(peer *Peer) (err error) {
 	peer.RUnlock()
 	for {
 		err = nil
-		sz := 2
+		sz := 2 // uint16 content_sz header
 		n := 0
 		nn := 0
-		buf := make([]byte, 1600)
-		for err == nil && n < sz {
+		buf := make([]byte, FRAME_SIZE)
+		for n < sz {
 			nn, err = conn.Read(buf[n:sz])
+			if err != nil {
+				break
+			}
 			// log.Print("Read ", nn, " bytes from ", peer.addr)
 			n += nn
 			if n == 2 {
-				sz = 2 + (int(buf[0]) | (int(buf[1]) << 8))
+				var content_sz uint16
+				binary.Read(bytes.NewBuffer(buf[:2]), binary.LittleEndian, &content_sz)
+				sz += int(content_sz)
+				if sz > FRAME_SIZE {
+					err = errors.New("ReceiveLoop: Incoming message too big")
+					break
+				}
 			}
 		}
 		if err != nil {
@@ -108,11 +121,10 @@ func (dn *Dename) HandleBroadcasts() {
 			if conn == nil {
 				continue
 			}
-			buf := make([]byte, 2+len(msg))
-			buf[0] = byte(len(msg) & 0x00ff)
-			buf[1] = byte((len(msg) >> 8) & 0xff)
-			copy(buf[2:], msg)
-			_, err := conn.Write(buf)
+			var buf bytes.Buffer
+			binary.Write(&buf, binary.LittleEndian, uint16(len(msg)))
+			buf.Write(msg)
+			_, err := conn.Write(buf.Bytes())
 			if err != nil {
 				log.Print(err)
 			}

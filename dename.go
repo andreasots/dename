@@ -300,6 +300,61 @@ func HashKeyAndQueue(key []byte, Q *Queue) (cdata []byte, err error) {
 	return h.Sum(nil), nil
 }
 
+func (dn *Dename) BringUpToDate(peer *Peer) {
+	var round int64
+	err := dn.db.QueryRow(`SELECT id FROM rounds
+			WHERE commit_time IS NULL;`).Scan(&round)
+	if err != nil {
+		log.Fatal("Select last uncommited round: ", err)
+	}
+
+	for _, rq_box := range dn.ReadQueue(round, dn.us.index).Entries {
+		mb := new(bytes.Buffer)
+		mb.WriteByte(1)
+		binary.Write(mb, binary.LittleEndian, uint64(round))
+		mb.Write(rq_box)
+		dn.peer_broadcast <- mb.Bytes()
+	}
+
+	rows, err := dn.db.Query(`SELECT commiter,acknowledger,signature FROM
+			commitments WHERE round = $1`, round)
+	if err != nil {
+		log.Fatal("BringUpToDate: Cannot load commitments for round ", round, ": ", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var c, a int // commiter and acknowledger
+		var signed_ack []byte
+		err := rows.Scan(&c, &a, &signed_ack)
+		if err != nil {
+			log.Fatal("Cannot load ack from database: ", err)
+		}
+		// As we do not store commitments separately, send our own when seen
+		if c == dn.us.index && a == dn.us.index {
+			signed_ack_pb := &sgp.Signed{}
+			err = proto.Unmarshal(signed_ack, signed_ack_pb)
+			if err != nil {
+				log.Fatal("BringUpToDate: our self-ack in DB is bad")
+			}
+			dn.peer_broadcast <- append([]byte{2}, signed_ack_pb.Message...)
+		}
+		dn.peer_broadcast <- append([]byte{3}, signed_ack...)
+	}
+	rows.Close()
+
+	var our_round_key []byte
+	err = dn.db.QueryRow(`SELECT key FROM round_keys WHERE
+			server = $1 AND round = $2;`, dn.us.index, round).Scan(&our_round_key)
+	if err != nil {
+		log.Fatalf("BringUpToDate: Cannot extract our round %d key: %f", round, err)
+	}
+	rk_msg, err := proto.Marshal(roundKey(round, dn.us.index, our_round_key))
+	if err != nil {
+		log.Fatalf("BringUpToDate: Cannot marshal our round %d key: %f", round, err)
+	}
+	dn.peer_broadcast <- append([]byte{4}, rk_msg...)
+}
+
 func (dn *Dename) Tick(round int64) {
 	log.Print("Round ", round, " ended")
 	//===== Commit to the queue and round key =====//
@@ -531,6 +586,12 @@ func (dn *Dename) Tick(round int64) {
 		d := uint64(random_seed) % uint64(len(rqs))
 		name_rq[name] = rqs[d]
 		log.Printf("Name \"%s\" transferred by option %d of %d", name, d+1, len(rqs))
+	}
+
+	_, err = dn.db.Exec(`UPDATE rounds SET commit_time = $1
+		WHERE round = $2`, time.Now().Unix(), round)
+	if err != nil {
+		log.Fatalf("Mark round %d as commited in database: %s", round, err)
 	}
 
 	log.Print("end dn.Tick(", round, ")")
