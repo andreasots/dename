@@ -302,7 +302,7 @@ func HashKeyAndQueue(key []byte, Q *Queue) (cdata []byte, err error) {
 	if err != nil {
 		return
 	}
-	// log.Printf("Hashing queue of %d: %d items", Q.GetServer(), len(Q.Entries))
+	log.Printf("Hashing queue of %d: %d items", Q.GetServer(), len(Q.Entries))
 	return h.Sum(nil), nil
 }
 
@@ -314,7 +314,13 @@ func (dn *Dename) BringUpToDate(peer *Peer) {
 	if err != nil {
 		log.Fatal("Select last uncommited round: ", err)
 	}
+	if round > 0 {
+		dn.RePushState(peer, round-1)
+	}
+	dn.RePushState(peer, round)
+}
 
+func (dn *Dename) RePushState(peer *Peer, round int64) {
 	for _, rq_box := range dn.ReadQueue(round, dn.us.index).Entries {
 		mb := new(bytes.Buffer)
 		mb.WriteByte(1)
