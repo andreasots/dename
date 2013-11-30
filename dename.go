@@ -60,17 +60,20 @@ func (dn *Dename) HandleMessage(peer *Peer, msg []byte) (err error) {
 	// log.Print("Received ", len(msg), " bytes from ", peer.addr)
 	switch msg[0] {
 	case 1:
-		return dn.HandlePush(peer, msg[1:])
+		err = dn.HandlePush(peer, msg[1:])
 	case 2:
-		return dn.HandleCommitment(peer, msg[1:])
+		err = dn.HandleCommitment(peer, msg[1:])
 	case 3:
-		return dn.HandleAck(peer, msg[1:])
+		err = dn.HandleAck(peer, msg[1:])
 	case 4:
-		return dn.HandleRoundKey(peer, msg[1:])
+		err = dn.HandleRoundKey(peer, msg[1:])
 	default:
-		log.Print("Unknown message of type ", msg[0], " from ", peer.index)
+		err = errors.New("Unknown message type")
 	}
-	return
+	if err != nil {
+		log.Fatalf("Message (%d) from %d: %s", msg[0], peer.index, err) // FIXME: remove?
+	}
+	return err
 }
 func (dn *Dename) HandlePush(peer *Peer, rq []byte) (err error) {
 	buf := bytes.NewBuffer(rq)
@@ -278,7 +281,7 @@ func (dn *Dename) ReadQueue(round int64, server int) *Queue {
 		Q.Entries = append(Q.Entries, transaction)
 	}
 	ByteSlices(Q.Entries).Sort()
-	log.Printf("Queue of %d at %d has %d entries", server, round, len(Q.Entries))
+	// log.Printf("Queue of %d at %d has %d entries", server, round, len(Q.Entries))
 	return Q
 }
 
@@ -302,7 +305,8 @@ func HashKeyAndQueue(key []byte, Q *Queue) (cdata []byte, err error) {
 func (dn *Dename) BringUpToDate(peer *Peer) {
 	var round int64
 	err := dn.db.QueryRow(`SELECT id FROM rounds
-			WHERE commit_time IS NULL;`).Scan(&round)
+			WHERE commit_time IS NULL
+			ORDER BY id ASC LIMIT 1`).Scan(&round)
 	if err != nil {
 		log.Fatal("Select last uncommited round: ", err)
 	}
@@ -312,32 +316,36 @@ func (dn *Dename) BringUpToDate(peer *Peer) {
 		mb.WriteByte(1)
 		binary.Write(mb, binary.LittleEndian, uint64(round))
 		mb.Write(rq_box)
-		dn.peer_broadcast <- mb.Bytes()
+		dn.SendToPeer(peer, mb.Bytes())
 	}
 
-	rows, err := dn.db.Query(`SELECT commiter,acknowledger,signature FROM
-			commitments WHERE round = $1`, round)
+	rows, err := dn.db.Query(`SELECT commiter, signature FROM
+			commitments WHERE round = $1 AND acknowledger = $2`,
+		round, dn.us.index)
 	if err != nil {
-		log.Fatal("BringUpToDate: Cannot load commitments for round ", round, ": ", err)
+		log.Fatal("BringUpToDate: Cannot load acks for round ", round, ": ", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var c, a int // commiter and acknowledger
+		var commiter int
 		var signed_ack []byte
-		err := rows.Scan(&c, &a, &signed_ack)
+		err := rows.Scan(&commiter, &signed_ack)
 		if err != nil {
 			log.Fatal("Cannot load ack from database: ", err)
 		}
 		// As we do not store commitments separately, send our own when seen
-		if c == dn.us.index && a == dn.us.index {
+		if commiter == dn.us.index {
 			signed_ack_pb := &sgp.Signed{}
 			err = proto.Unmarshal(signed_ack, signed_ack_pb)
 			if err != nil {
 				log.Fatal("BringUpToDate: our self-ack in DB is bad")
 			}
-			dn.peer_broadcast <- append([]byte{2}, signed_ack_pb.Message...)
+			if string(signed_ack_pb.Message[:4]) != "ACKN" {
+				log.Fatal("Our self-ack has bad tag in DB")
+			}
+			dn.SendToPeer(peer, append([]byte{2}, signed_ack_pb.Message[4:]...))
 		}
-		dn.peer_broadcast <- append([]byte{3}, signed_ack...)
+		dn.SendToPeer(peer, append([]byte{3}, signed_ack...))
 	}
 	rows.Close()
 
@@ -351,7 +359,7 @@ func (dn *Dename) BringUpToDate(peer *Peer) {
 	if err != nil {
 		log.Fatalf("BringUpToDate: Cannot marshal our round %d key: %f", round, err)
 	}
-	dn.peer_broadcast <- append([]byte{4}, rk_msg...)
+	dn.SendToPeer(peer, append([]byte{4}, rk_msg...))
 }
 
 func (dn *Dename) Tick(round int64) {
@@ -416,7 +424,7 @@ func (dn *Dename) Tick(round int64) {
 			}
 		}
 		<-quit
-		// log.Print("Loaded all relevant acks from table")
+		log.Print("Loaded all relevant acks from table")
 	}()
 
 	for ack := range dn.acks_for_consensus {
@@ -440,7 +448,7 @@ func (dn *Dename) Tick(round int64) {
 		if acks_remaining == 0 {
 			break
 		}
-		// log.Print(a, " @ ", c, "; need ", acks_remaining, " more")
+		log.Print(a, " @ ", c, "; need ", acks_remaining, " more")
 	}
 	quit <- struct{}{}
 
@@ -480,7 +488,7 @@ func (dn *Dename) Tick(round int64) {
 	}()
 
 	for keying := range dn.keys_for_consensus {
-		// log.Print("Round key from ", *keying.Server)
+		log.Print("Round key from ", *keying.Server)
 		if keying.GetRound() != int64(round) {
 			continue
 		}

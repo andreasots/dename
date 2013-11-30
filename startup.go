@@ -152,21 +152,6 @@ func dename(cfg *Cfg) {
 		log.Fatal("We are not on the peers list")
 	}
 
-	if round > 0 {
-		have_consensus := false
-		err = dn.db.QueryRow(`SELECT (commit_time IS NOT NULL) FROM rounds
-				WHERE id = $1`, round-1).Scan(&have_consensus)
-		if err != nil {
-			log.Fatalf("Check if round %d reached consensus: %s", round-1, err)
-		}
-		if !have_consensus {
-			log.Printf("Running consensus for round %d", round-1)
-			dn.Tick(round - 1)
-		}
-	}
-
-	go dn.WaitForTicks(round, time.Unix(round_end_u, 0))
-
 	go dn.HandleBroadcasts()
 
 	our_server_tcpaddr, err := net.ResolveTCPAddr("tcp", dn.us.addr+":"+S2S_PORT)
@@ -183,5 +168,20 @@ func dename(cfg *Cfg) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	dn.ListenForClients()
+	go dn.ListenForClients()
+
+	if round > 0 {
+		have_consensus := false
+		err = dn.db.QueryRow(`SELECT (commit_time IS NOT NULL) FROM rounds
+				WHERE id = $1`, round-1).Scan(&have_consensus)
+		if err != nil {
+			log.Fatalf("Check if round %d reached consensus: %s", round-1, err)
+		}
+		if !have_consensus {
+			log.Printf("Running consensus for round %d", round-1)
+			dn.Tick(round - 1)
+		}
+	}
+
+	dn.WaitForTicks(round, time.Unix(round_end_u, 0))
 }
