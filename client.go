@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/binary"
-	"github.com/bmizerany/pq"
 	"io"
 	"io/ioutil"
 	"log"
@@ -15,16 +14,6 @@ import (
 	"code.google.com/p/goprotobuf/proto"
 	"github.com/andres-erbsen/sgp"
 )
-
-const pgErrorRetrySerializeable = "40001"
-
-func isPGError(err error, code string) bool {
-	if err == nil {
-		return false
-	}
-	pqErr, ok := err.(pq.PGError)
-	return ok && pqErr.Get('C') == code
-}
 
 func (dn *Dename) ValidateRequest(rq_bs []byte) (name string, err error) {
 	signed_rq := &sgp.Signed{}

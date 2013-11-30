@@ -28,7 +28,7 @@ func (dn *Dename) CreateTables() {
 		id serial not null primary key,
 		round integer not null,
 		server integer not null,
-		key bytea not null,
+		key bytea unique not null,
 		FOREIGN KEY(round) REFERENCES rounds(id),
 		FOREIGN KEY(server) REFERENCES servers(id));`)
 	if err != nil {
@@ -50,7 +50,7 @@ func (dn *Dename) CreateTables() {
 		id serial not null primary key,
 		round integer not null,
 		introducer integer not null,
-		request bytea not null,
+		request bytea unique not null,
 		FOREIGN KEY(round) REFERENCES rounds(id),
 		FOREIGN KEY(introducer) REFERENCES servers(id));`)
 	if err != nil {
@@ -63,7 +63,7 @@ func (dn *Dename) CreateTables() {
 		round integer not null,
 		commiter integer not null,
 		acknowledger integer not null,
-		signature bytea not null,
+		signature bytea unique not null,
 		FOREIGN KEY(round) REFERENCES rounds(id),
 		FOREIGN KEY(commiter) REFERENCES servers(id),
 		FOREIGN KEY(acknowledger) REFERENCES servers(id));`)

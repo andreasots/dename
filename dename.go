@@ -12,18 +12,12 @@ import (
 	"io"
 	"log"
 	"net"
-	"sort"
 	"sync"
 	"time"
 
 	"code.google.com/p/goprotobuf/proto"
 	"github.com/andres-erbsen/sgp"
 )
-
-const TICK_INTERVAL = 4 * time.Second
-const S2S_PORT = "6362"
-
-var errPeer = errors.New("Peer id mismatch")
 
 type Peer struct {
 	index int
@@ -69,9 +63,6 @@ func (dn *Dename) HandleMessage(peer *Peer, msg []byte) (err error) {
 	default:
 		err = errors.New("Unknown message type")
 	}
-	if err != nil {
-		log.Fatalf("Message (%d) from %d: %s", msg[0], peer.index, err) // FIXME: remove?
-	}
 	return err
 }
 func (dn *Dename) HandlePush(peer *Peer, rq []byte) (err error) {
@@ -83,14 +74,17 @@ func (dn *Dename) HandlePush(peer *Peer, rq []byte) (err error) {
 	}
 	_, err = dn.db.Exec(`INSERT INTO transaction_queue(round,introducer,request)
 			VALUES($1,$2,$3);`, round, peer.index, rq[8:])
-	if err != nil {
+	if isPGError(err, pgErrorUniqueViolation) {
+		// log.Print("Ignoring duplicate transaction from ", peer.index)
+		err = nil
+	} else if err != nil {
 		log.Fatal("Cannot insert new transaction to queue: ", err)
 	}
 	return
 }
 
 func (dn *Dename) HandleCommitment(peer *Peer, signed_commitment []byte) (err error) {
-	log.Print("Commit from ", peer.index)
+	// log.Print("Commit from ", peer.index)
 	commitment, err := peer.pk.Verify(signed_commitment)
 	if err != nil {
 		return
@@ -188,8 +182,13 @@ func (dn *Dename) HandleAck(peer *Peer, signed_ack []byte) (err error) {
 			commitments(round,commiter,acknowledger,signature)
 			VALUES($1,$2,$3,$4)`,
 		commitment.Round, commitment.Server, peer.index, signed_ack)
+	if isPGError(err, pgErrorUniqueViolation) {
+		// log.Print("Ignoring duplicate ack from ", peer.index)
+		err = nil
+		return
+	}
 	// log.Print(peer.index, " acked ", *commitment.Server, " (round ", *commitment.Round, ")")
-	log.Print("Ack ", *commitment.Server, " from ", peer.index)
+	// log.Print("Ack ", *commitment.Server, " from ", peer.index)
 	go func() { // for efficency, one would use ana ctual elastic buffer channel
 		dn.acks_for_consensus <- VerifiedAckedCommitment{
 			Commitment: commitment, Acknowledger: peer.index}
@@ -208,6 +207,11 @@ func (dn *Dename) HandleRoundKey(peer *Peer, rk_msg []byte) (err error) {
 	}
 	_, err = dn.db.Exec(`INSERT INTO round_keys(round,server,key)
 			VALUES($1,$2,$3)`, int(rk_pb.GetRound()), peer.index, rk_pb.Key)
+	if isPGError(err, pgErrorUniqueViolation) {
+		log.Print("Ignoring duplicate roundkey from ", peer.index)
+		err = nil
+		return
+	}
 	go func() { // for efficency, one would use ana ctual elastic buffer channel
 		dn.keys_for_consensus <- rk_pb
 	}()
@@ -298,6 +302,7 @@ func HashKeyAndQueue(key []byte, Q *Queue) (cdata []byte, err error) {
 	if err != nil {
 		return
 	}
+	// log.Printf("Hashing queue of %d: %d items", Q.GetServer(), len(Q.Entries))
 	return h.Sum(nil), nil
 }
 
@@ -611,10 +616,3 @@ func roundKey(round int64, server int, key []byte) *RoundKey {
 	server_ := int64(server)
 	return &RoundKey{Round: &round, Server: &server_, Key: key}
 }
-
-type ByteSlices [][]byte
-
-func (p ByteSlices) Len() int           { return len(p) }
-func (p ByteSlices) Less(i, j int) bool { return bytes.Compare(p[i], p[j]) < 0 }
-func (p ByteSlices) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
-func (p ByteSlices) Sort()              { sort.Sort(p) }
