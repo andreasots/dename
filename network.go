@@ -111,20 +111,29 @@ func (peer *Peer) CloseConn() {
 	peer.conn = nil
 }
 
+// Returns whether the send succeeded
+func (dn *Dename) SendToPeer(peer *Peer, msg []byte) error {
+	peer.RLock()
+	conn := peer.conn
+	peer.RUnlock()
+	if conn == nil {
+		return errors.New("SendToPeer: No connection present")
+	}
+	var buf bytes.Buffer
+	binary.Write(&buf, binary.LittleEndian, uint16(len(msg)))
+	buf.Write(msg)
+	_, err := conn.Write(buf.Bytes())
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func (dn *Dename) HandleBroadcasts() {
 	for msg := range dn.peer_broadcast {
 		// log.Print("broadcast ", len(msg), " bytes")
 		for _, peer := range dn.addr2peer {
-			peer.RLock()
-			conn := peer.conn
-			peer.RUnlock()
-			if conn == nil {
-				continue
-			}
-			var buf bytes.Buffer
-			binary.Write(&buf, binary.LittleEndian, uint16(len(msg)))
-			buf.Write(msg)
-			_, err := conn.Write(buf.Bytes())
+			err := dn.SendToPeer(peer, msg)
 			if err != nil {
 				log.Print(err)
 			}
