@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"fmt"
 )
 
 func (dn *Dename) ListenForClients() {
@@ -111,13 +112,12 @@ func (peer *Peer) CloseConn() {
 	peer.conn = nil
 }
 
-// Returns whether the send succeeded
 func (dn *Dename) SendToPeer(peer *Peer, msg []byte) error {
 	peer.RLock()
 	conn := peer.conn
 	peer.RUnlock()
 	if conn == nil {
-		return errors.New("SendToPeer: No connection present")
+		return errors.New(fmt.Sprintf("SendToPeer: No connection to %v present (%v)", peer.index, dn.us.index))
 	}
 	var buf bytes.Buffer
 	binary.Write(&buf, binary.LittleEndian, uint16(len(msg)))
@@ -129,14 +129,15 @@ func (dn *Dename) SendToPeer(peer *Peer, msg []byte) error {
 	return nil
 }
 
-func (dn *Dename) HandleBroadcasts() {
-	for msg := range dn.peer_broadcast {
-		// log.Print("broadcast ", len(msg), " bytes")
-		for _, peer := range dn.addr2peer {
-			err := dn.SendToPeer(peer, msg)
-			if err != nil {
-				log.Print(err)
-			}
+func (dn *Dename) Broadcast(msg []byte) {
+	for _, peer := range dn.addr2peer {
+		if peer.index != dn.us.index {
+			go func(peer *Peer){
+				err := dn.SendToPeer(peer, msg)
+				if err != nil {
+					log.Print(err)
+				}
+			}(peer)
 		}
 	}
 }

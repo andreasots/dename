@@ -158,5 +158,5 @@ retry_transaction:
 	mb.WriteByte(1)
 	binary.Write(mb, binary.LittleEndian, uint64(round))
 	mb.Write(rq_box)
-	dn.peer_broadcast <- mb.Bytes()
+	dn.Broadcast(mb.Bytes())
 }

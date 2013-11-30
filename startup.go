@@ -50,7 +50,6 @@ func dename(cfg *Cfg) {
 		addr2peer: make(map[string]*Peer),
 		peers:     make(map[int]*Peer),
 
-		peer_broadcast:     make(chan []byte),
 		acks_for_consensus: make(chan VerifiedAckedCommitment),
 		keys_for_consensus: make(chan *RoundKey)}
 
@@ -151,8 +150,6 @@ func dename(cfg *Cfg) {
 	if dn.us.index == -1 {
 		log.Fatal("We are not on the peers list")
 	}
-
-	go dn.HandleBroadcasts()
 
 	our_server_tcpaddr, err := net.ResolveTCPAddr("tcp", dn.us.addr+":"+S2S_PORT)
 	if err != nil {

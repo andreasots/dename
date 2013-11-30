@@ -46,7 +46,6 @@ type Dename struct {
 	client_lnr      net.Listener
 	RoundForClients sync.RWMutex
 
-	peer_broadcast     chan []byte
 	acks_for_consensus chan VerifiedAckedCommitment
 	keys_for_consensus chan *RoundKey
 }
@@ -112,7 +111,7 @@ func (dn *Dename) HandleCommitment(peer *Peer, signed_commitment []byte) (err er
 	if err != nil {
 		panic(err)
 	}
-	dn.peer_broadcast <- append([]byte{3}, ack...)
+	dn.Broadcast(append([]byte{3}, ack...))
 	return nil
 }
 
@@ -386,7 +385,7 @@ func (dn *Dename) Tick(round int64) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	dn.peer_broadcast <- append([]byte{2}, commitment...)
+	dn.Broadcast(append([]byte{2}, commitment...))
 
 	//===== Receive commitments and acknowledgements =====//
 	n := len(dn.addr2peer)
@@ -448,7 +447,7 @@ func (dn *Dename) Tick(round int64) {
 		if acks_remaining == 0 {
 			break
 		}
-		log.Print(a, " @ ", c, "; need ", acks_remaining, " more")
+		//log.Print(a, " @ ", c, "; need ", acks_remaining, " more")
 	}
 	quit <- struct{}{}
 
@@ -457,7 +456,7 @@ func (dn *Dename) Tick(round int64) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	dn.peer_broadcast <- append([]byte{4}, msg...)
+	dn.Broadcast(append([]byte{4}, msg...))
 
 	//===== Receive round keys =====//
 	hasKeyed := make([]bool, n)
