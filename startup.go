@@ -27,11 +27,12 @@ type Cfg struct {
 		Name     string
 		Host     string
 		Port     string
-		Username string
+		User     string
 		Password string
 	}
-	Genesis struct {
-		Time int64
+	Naming struct {
+		StartTime int64
+		File      string
 	}
 }
 
@@ -53,7 +54,7 @@ func dename(cfg *Cfg) {
 		acks_for_consensus: make(chan VerifiedAckedCommitment),
 		keys_for_consensus: make(chan *RoundKey)}
 
-	dn.db, err = sql.Open("postgres", "user="+cfg.Database.Username+" password="+cfg.Database.Password+" dbname="+cfg.Database.Name+" sslmode=disable")
+	dn.db, err = sql.Open("postgres", "user="+cfg.Database.User+" password="+cfg.Database.Password+" dbname="+cfg.Database.Name+" sslmode=disable")
 	if err != nil {
 		log.Fatalf("Cannot open database: %f", err)
 	}
@@ -111,7 +112,7 @@ func dename(cfg *Cfg) {
 		log.Printf("Resuming round %d for clients", round)
 	} else if err == sql.ErrNoRows {
 		round = 0
-		round_end_u = cfg.Genesis.Time
+		round_end_u = cfg.Naming.StartTime
 		_, err = dn.db.Exec(`INSERT INTO rounds(id, end_time)
 			VALUES($1,$2)`, round, round_end_u)
 		if err != nil {

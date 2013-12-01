@@ -8,5 +8,5 @@ fi
 
 for i in $(seq 1 $2)
 do
-	sed -i "s/^time = .*$/time = $((($(date +%s)+$3)))/" $1/$i/dename.cfg
+	sed -i "s/^starttime = .*$/starttime = $((($(date +%s)+$3)))/" $1/$i/dename.cfg
 done

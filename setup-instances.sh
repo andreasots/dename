@@ -18,7 +18,7 @@ setup_instance() {
 	echo "$config" > $dir/$1/dename.cfg
 	host=$(grep -Pzo '\[general\]\n(.+\n)*host\s*=\s*\K.+' $dir/$1/dename.cfg)
 	dbname=$(grep -Pzo '\[database\]\n(.+\n)*name\s*=\s*\K.+' $dir/$1/dename.cfg)
-	dbuser=$(grep -Pzo '\[database\]\n(.+\n)*username\s*=\s*\K.+' $dir/$1/dename.cfg)
+	dbuser=$(grep -Pzo '\[database\]\n(.+\n)*user\s*=\s*\K.+' $dir/$1/dename.cfg)
 	dbpassword=$(grep -Pzo '\[database\]\n(.+\n)*password\s*=\s*\K.+' $dir/$1/dename.cfg)
 	sudo ip addr add $host/30 dev lo:$1
 	cmd="
