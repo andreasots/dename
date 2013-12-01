@@ -17,6 +17,7 @@ import (
 
 	"code.google.com/p/goprotobuf/proto"
 	"github.com/andres-erbsen/sgp"
+	"github.com/daniel-ziegler/merklemap"
 )
 
 type Peer struct {
@@ -42,6 +43,8 @@ type Dename struct {
 
 	acks_for_consensus chan VerifiedAckedCommitment
 	keys_for_consensus chan *RoundKey
+
+	merklemap *merklemap.Map
 }
 
 type VerifiedAckedCommitment struct {
@@ -605,8 +608,37 @@ func (dn *Dename) Tick(round int64) {
 		log.Printf("Name \"%s\" transferred by option %d of %d", name, d+1, len(rqs))
 	}
 
-	r, err := dn.db.Exec(`UPDATE rounds SET commit_time = $1
-		WHERE id = $2 AND commit_time IS NULL`, time.Now().Unix(), round)
+	prev_snapshot := int64(0)
+	if round != 0 {
+		err = dn.db.QueryRow(`SELECT naming_snapshot FROM rounds
+				WHERE id = $1`, round-1).Scan(&prev_snapshot)
+		if err != nil {
+			log.Fatal("Get naming snapshot id of last round: ", err)
+		}
+	}
+
+	stmt, err := dn.db.Prepare(`UPDATE name_mapping SET pubkey = $1 WHERE name = $2`)
+	if err != nil {
+		log.Fatal("PREPARE: Update names in database: %s", err)
+	}
+	defer stmt.Close()
+	naming := dn.merklemap.GetSnapshot(prev_snapshot)
+	for name, pk := range name_rq {
+		_, err = stmt.Exec(pk, name)
+		if err != nil {
+			log.Fatal("Update name \"%s\" in database: %s", name, err)
+		}
+		name_hash := merklemap.Hash([]byte(name))
+		pk_hash := merklemap.Hash(pk)
+		err = naming.Set(name_hash, pk_hash)
+		if err != nil {
+			log.Fatal("Update name \"%s\" in merklemap: %s", name, err)
+		}
+	}
+	stmt.Close()
+
+	r, err := dn.db.Exec(`UPDATE rounds SET commit_time = $1, naming_snapshot = $2
+		WHERE id = $3 AND commit_time IS NULL`, time.Now().Unix(), naming.Id, round)
 	if err != nil {
 		log.Fatalf("Mark round %d as commited in database: %s", round, err)
 	}
@@ -615,7 +647,8 @@ func (dn *Dename) Tick(round int64) {
 		log.Fatalf("Wanted to set commit_time for 1 round, hit %d instead", n_updates)
 	}
 
-	log.Print("end dn.Tick(", round, ")")
+	rh, _ := naming.GetRootHash()
+	log.Printf("end dn.Tick(%d) -> %x", round, *rh)
 }
 
 func roundKey(round int64, server int, key []byte) *RoundKey {

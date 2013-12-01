@@ -17,8 +17,9 @@ func (dn *Dename) CreateTables() {
 	// rounds
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS rounds (
 		id serial not null primary key,
-		end_time integer not null,
-		commit_time integer); -- NULLABLE`)
+		end_time bigint not null,
+		commit_time bigint,
+		naming_snapshot bigint);`)
 	if err != nil {
 		log.Fatal("Cannot create table rounds: ", err)
 	}
@@ -26,7 +27,7 @@ func (dn *Dename) CreateTables() {
 	// round_keys
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS round_keys (
 		id serial not null primary key,
-		round integer not null,
+		round bigint not null,
 		server integer not null,
 		key bytea unique not null,
 		FOREIGN KEY(round) REFERENCES rounds(id),
@@ -38,7 +39,7 @@ func (dn *Dename) CreateTables() {
 	// names_we_transfer
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS names_we_transfer (
 		id serial not null primary key,
-		round integer not null,
+		round bigint not null,
 		name bytea not null,
 		FOREIGN KEY(round) REFERENCES rounds(id));`)
 	if err != nil {
@@ -48,7 +49,7 @@ func (dn *Dename) CreateTables() {
 	// transaction_queue
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS transaction_queue (
 		id serial not null primary key,
-		round integer not null,
+		round bigint not null,
 		introducer integer not null,
 		request bytea unique not null,
 		FOREIGN KEY(round) REFERENCES rounds(id),
@@ -60,7 +61,7 @@ func (dn *Dename) CreateTables() {
 	// commitments
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS commitments (
 		id serial not null primary key,
-		round integer not null,
+		round bigint not null,
 		commiter integer not null,
 		acknowledger integer not null,
 		signature bytea unique not null,

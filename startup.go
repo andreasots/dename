@@ -12,6 +12,7 @@ import (
 
 	"code.google.com/p/gcfg"
 	"github.com/andres-erbsen/sgp"
+	"github.com/daniel-ziegler/merklemap"
 )
 
 type Cfg struct {
@@ -65,6 +66,12 @@ func dename(cfg *Cfg) {
 	if err != nil {
 		log.Fatal("Cannot load secret key from \"sk\"", err)
 	}
+
+	mm, err := merklemap.Open(cfg.Naming.File)
+	if err != nil {
+		log.Fatal(err)
+	}
+	dn.merklemap = mm
 
 	// sort the peers by public keys
 	peer_b64_pks := make([]string, len(cfg.Peer))
