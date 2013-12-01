@@ -507,7 +507,7 @@ func (dn *Dename) Tick(round int64) {
 		}
 		if !hasKeyed[*keying.Server] {
 			if len(keying.Key) != 32 {
-				log.Fatal("Key of wrong size from %d", *keying.Server)
+				log.Fatalf("Key of wrong size from %d", *keying.Server)
 			}
 			keys_remaining--
 			hasKeyed[*keying.Server] = true
@@ -573,11 +573,11 @@ func (dn *Dename) Tick(round int64) {
 				rq_bs := []byte{}
 				rq_bs, ok = secretbox.Open(rq_bs, rq_box[24:], &nonce, &roundKeys[i])
 				if !ok {
-					log.Fatal("Decryption failed at %d from %d in round %d", i, j, round)
+					log.Fatalf("Decryption failed at %d from %d in round %d", i, j, round)
 				}
 				name, err := dn.ValidateRequest(rq_bs)
 				if err != nil {
-					log.Fatal("Validation failed for \"%s\" from %d in round %d",
+					log.Fatalf("Validation failed for \"%s\" from %d in round %d",
 						name, i, round)
 				}
 				if _, present := peers_rq[i][name]; present {
@@ -619,20 +619,20 @@ func (dn *Dename) Tick(round int64) {
 
 	stmt, err := dn.db.Prepare(`UPDATE name_mapping SET pubkey = $1 WHERE name = $2`)
 	if err != nil {
-		log.Fatal("PREPARE: Update names in database: %s", err)
+		log.Fatalf("PREPARE: Update names in database: %s", err)
 	}
 	defer stmt.Close()
 	naming := dn.merklemap.GetSnapshot(prev_snapshot)
 	for name, pk := range name_rq {
 		_, err = stmt.Exec(pk, name)
 		if err != nil {
-			log.Fatal("Update name \"%s\" in database: %s", name, err)
+			log.Fatalf("Update name \"%s\" in database: %s", name, err)
 		}
 		name_hash := merklemap.Hash([]byte(name))
 		pk_hash := merklemap.Hash(pk)
 		err = naming.Set(name_hash, pk_hash)
 		if err != nil {
-			log.Fatal("Update name \"%s\" in merklemap: %s", name, err)
+			log.Fatalf("Update name \"%s\" in merklemap: %s", name, err)
 		}
 	}
 	stmt.Close()

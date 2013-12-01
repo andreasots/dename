@@ -104,7 +104,6 @@ func (dn *Dename) ReceiveLoop(peer *Peer) (err error) {
 			go dn.HandleMessage(peer, buf[2:sz])
 		}
 	}
-	return nil
 }
 
 func (peer *Peer) CloseConn() {

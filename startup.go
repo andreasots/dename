@@ -92,7 +92,7 @@ func dename(cfg *Cfg) {
 		pk := &sgp.Entity{}
 		err = pk.Parse(pk_bytes)
 		if err != nil {
-			log.Fatal("Bad pk: %f (for %f)", err, host)
+			log.Fatalf("Bad pk: %f (for %f)", err, host)
 		}
 		addr_struct, err := net.ResolveIPAddr("", host)
 		if err != nil {
