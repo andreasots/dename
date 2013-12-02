@@ -623,6 +623,10 @@ func (dn *Dename) Tick(round int64) {
 	}
 	defer stmt.Close()
 	naming := dn.merklemap.GetSnapshot(prev_snapshot)
+	mapHandle, err := naming.OpenHandle()
+	if err != nil {
+		log.Fatalf("Error opening merklemap handle: %s", err)
+	}
 	for name, pk := range name_rq {
 		_, err = stmt.Exec(pk, name)
 		if err != nil {
@@ -630,15 +634,25 @@ func (dn *Dename) Tick(round int64) {
 		}
 		name_hash := merklemap.Hash([]byte(name))
 		pk_hash := merklemap.Hash(pk)
-		err = naming.Set(name_hash, pk_hash)
+		err = mapHandle.Set(name_hash, pk_hash)
 		if err != nil {
 			log.Fatalf("Update name \"%s\" in merklemap: %s", name, err)
 		}
 	}
 	stmt.Close()
 
+	rootHash, err := mapHandle.GetRootHash()
+	if err != nil {
+		log.Fatalf("Error getting root hash: %s", err)
+	}
+
+	newNaming, err := mapHandle.FinishUpdate()
+	if err != nil {
+		log.Fatalf("Error closing merklemap handle: %s", err)
+	}
+
 	r, err := dn.db.Exec(`UPDATE rounds SET commit_time = $1, naming_snapshot = $2
-		WHERE id = $3 AND commit_time IS NULL`, time.Now().Unix(), naming.Id, round)
+		WHERE id = $3 AND commit_time IS NULL`, time.Now().Unix(), newNaming.GetId(), round)
 	if err != nil {
 		log.Fatalf("Mark round %d as commited in database: %s", round, err)
 	}
@@ -647,8 +661,7 @@ func (dn *Dename) Tick(round int64) {
 		log.Fatalf("Wanted to set commit_time for 1 round, hit %d instead", n_updates)
 	}
 
-	rh, _ := naming.GetRootHash()
-	log.Printf("end dn.Tick(%d) -> %x", round, *rh)
+	log.Printf("end dn.Tick(%d) -> %x", round, *rootHash)
 }
 
 func roundKey(round int64, server int, key []byte) *RoundKey {
