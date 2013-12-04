@@ -642,7 +642,7 @@ func (dn *Dename) Tick(round int64) {
 	}
 	our_publish_bs = append([]byte("ROOT"), our_publish_bs...)
 	our_signed_publish_bs := dn.our_sk.Sign(our_publish_bs)
-	publish_s2s := &S2SMessage{Round: &round, Publish: our_signed_publish_bs}
+	publish_s2s := &S2SMessage{Server: &dn.us.index, Round: &round, Publish: our_signed_publish_bs}
 	err = dn.HandlePublish(dn.us, publish_s2s)
 	if err != nil {
 		panic(err)
