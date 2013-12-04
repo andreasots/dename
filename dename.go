@@ -298,6 +298,14 @@ func (dn *Dename) BringUpToDate(peer *Peer) {
 	}
 	if round > 0 {
 		dn.RePushState(peer, round-1)
+		var our_round_key []byte
+		err = dn.db.QueryRow(`SELECT key FROM round_keys WHERE
+				server = $1 AND round = $2;`, dn.us.index, round).Scan(&our_round_key)
+		if err != nil {
+			log.Fatalf("RePushState: Cannot extract our round %d key: %f", round, err)
+		}
+		dn.Broadcast(&S2SMessage{Round: &round, RoundKey: our_round_key})
+
 	}
 	dn.RePushState(peer, round)
 }
@@ -333,14 +341,6 @@ func (dn *Dename) RePushState(peer *Peer, round int64) {
 		dn.SendToPeer(peer, &S2SMessage{Round: &round, Ack: signed_ack_bs})
 	}
 	rows.Close()
-
-	var our_round_key []byte
-	err = dn.db.QueryRow(`SELECT key FROM round_keys WHERE
-			server = $1 AND round = $2;`, dn.us.index, round).Scan(&our_round_key)
-	if err != nil {
-		log.Fatalf("RePushState: Cannot extract our round %d key: %f", round, err)
-	}
-	dn.Broadcast(&S2SMessage{Round: &round, RoundKey: our_round_key})
 }
 
 func (dn *Dename) Tick(round int64) {
