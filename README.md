@@ -16,15 +16,6 @@ How to install/use:
 * Run `dename`
 
 How to test multiple instances on the same machine:
-* Add an IP address for each instance, e.g.
-
-        sudo ip addr add 11.22.33.44/30 dev lo:1
-        sudo ip addr add 11.22.33.45/30 dev lo:2
-        sudo ip addr add 11.22.33.46/30 dev lo:3
-
-* Make a DB for each instance
-* Make directories for all the instances
-* In each directory, run `go run $GOPATH/src/github.com/andres-erbsen/sgp/keygen.go 2>sk | base64` and paste the output into the peer declarations in `dename.cfg`
-* Copy the `dename.cfg` into each directory, changing the host IP and DB
-* Run `dename` in each directory in parallel
+ * Run `./setup-instances.sh <directory> <number of instances>`
+ * Run `./run-instances.sh <directory> <number of instances>` (or run them manually in different terminal windows, if you like)
 

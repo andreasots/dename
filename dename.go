@@ -297,15 +297,15 @@ func (dn *Dename) BringUpToDate(peer *Peer) {
 		log.Fatal("Select last uncommited round: ", err)
 	}
 	if round > 0 {
-		dn.RePushState(peer, round-1)
+		prev_round := round - 1
+		dn.RePushState(peer, prev_round)
 		var our_round_key []byte
 		err = dn.db.QueryRow(`SELECT key FROM round_keys WHERE
-				server = $1 AND round = $2;`, dn.us.index, round).Scan(&our_round_key)
+				server = $1 AND round = $2;`, dn.us.index, prev_round).Scan(&our_round_key)
 		if err != nil {
-			log.Fatalf("RePushState: Cannot extract our round %d key: %f", round, err)
+			log.Fatalf("RePushState: Cannot extract our round %d key: %f", prev_round, err)
 		}
-		dn.Broadcast(&S2SMessage{Round: &round, RoundKey: our_round_key})
-
+		dn.Broadcast(&S2SMessage{Round: &prev_round, RoundKey: our_round_key})
 	}
 	dn.RePushState(peer, round)
 }
@@ -474,7 +474,7 @@ func (dn *Dename) Tick(round int64) {
 		}
 		if !hasKeyed[*msg.Server] {
 			if len(msg.RoundKey) != 32 {
-				log.Fatal("Key of wrong size from %d", *msg.Server)
+				log.Fatalf("Key of wrong size from %d", *msg.Server)
 			}
 			keys_remaining--
 			hasKeyed[*msg.Server] = true
@@ -540,11 +540,11 @@ func (dn *Dename) Tick(round int64) {
 				rq_bs := []byte{}
 				rq_bs, ok = secretbox.Open(rq_bs, rq_box[24:], &nonce, &roundKeys[i])
 				if !ok {
-					log.Fatal("Decryption failed at %d from %d in round %d", i, j, round)
+					log.Fatalf("Decryption failed at %d from %d in round %d", i, j, round)
 				}
 				name, err := dn.ValidateRequest(rq_bs)
 				if err != nil {
-					log.Fatal("Validation failed for \"%s\" from %d in round %d",
+					log.Fatalf("Validation failed for \"%s\" from %d in round %d",
 						name, i, round)
 				}
 				if _, present := peers_rq[i][name]; present {
@@ -586,26 +586,40 @@ func (dn *Dename) Tick(round int64) {
 
 	stmt, err := dn.db.Prepare(`UPDATE name_mapping SET pubkey = $1 WHERE name = $2`)
 	if err != nil {
-		log.Fatal("PREPARE: Update names in database: %s", err)
+		log.Fatalf("PREPARE: Update names in database: %s", err)
 	}
 	defer stmt.Close()
 	naming := dn.merklemap.GetSnapshot(prev_snapshot)
+	mapHandle, err := naming.OpenHandle()
+	if err != nil {
+		log.Fatalf("Error opening merklemap handle: %s", err)
+	}
 	for name, pk := range name_rq {
 		_, err = stmt.Exec(pk, name)
 		if err != nil {
-			log.Fatal("Update name \"%s\" in database: %s", name, err)
+			log.Fatalf("Update name \"%s\" in database: %s", name, err)
 		}
 		name_hash := merklemap.Hash([]byte(name))
 		pk_hash := merklemap.Hash(pk)
-		err = naming.Set(name_hash, pk_hash)
+		err = mapHandle.Set(name_hash, pk_hash)
 		if err != nil {
-			log.Fatal("Update name \"%s\" in merklemap: %s", name, err)
+			log.Fatalf("Update name \"%s\" in merklemap: %s", name, err)
 		}
 	}
 	stmt.Close()
 
+	rootHash, err := mapHandle.GetRootHash()
+	if err != nil {
+		log.Fatalf("Error getting root hash: %s", err)
+	}
+
+	newNaming, err := mapHandle.FinishUpdate()
+	if err != nil {
+		log.Fatalf("Error closing merklemap handle: %s", err)
+	}
+
 	r, err := dn.db.Exec(`UPDATE rounds SET commit_time = $1, naming_snapshot = $2
-		WHERE id = $3 AND commit_time IS NULL`, time.Now().Unix(), naming.Id, round)
+		WHERE id = $3 AND commit_time IS NULL`, time.Now().Unix(), newNaming.GetId(), round)
 	if err != nil {
 		log.Fatalf("Mark round %d as commited in database: %s", round, err)
 	}
@@ -614,6 +628,5 @@ func (dn *Dename) Tick(round int64) {
 		log.Fatalf("Wanted to set commit_time for 1 round, hit %d instead", n_updates)
 	}
 
-	rh, _ := naming.GetRootHash()
-	log.Printf("end dn.Tick(%d) -> %x", round, *rh)
+	log.Printf("end dn.Tick(%d) -> %x", round, *rootHash)
 }
