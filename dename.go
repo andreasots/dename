@@ -111,9 +111,7 @@ func (peer *Peer) UnmarshalVerify(signed_bs []byte, tag string,
 
 func (dn *Dename) HandleCommitment(peer *Peer, msg *S2SMessage) (err error) {
 	commitment_msg := &Commitment{}
-	commitment_msg_bs := &[]byte{}
-	err = peer.UnmarshalVerify(msg.Commitment, "COMM",
-		commitment_msg, commitment_msg_bs)
+	err = peer.UnmarshalVerify(msg.Commitment, "COMM", commitment_msg, nil)
 	if err != nil {
 		return
 	}
@@ -191,7 +189,7 @@ func (dn *Dename) HandlePublish(peer *Peer, msg *S2SMessage) (err error) {
 		return
 	}
 	_, err = dn.db.Exec(`INSERT INTO round_signatures(round,server,signature)
-			VALUES($1,$2,$3)`, *mapping_root_msg.Round, peer.index, mapping_root_msg.Root)
+			VALUES($1,$2,$3)`, *mapping_root_msg.Round, peer.index, msg.Publish)
 	if isPGError(err, pgErrorUniqueViolation) {
 		log.Print("Ignoring duplicate signature from ", peer.index)
 		err = nil
@@ -341,6 +339,14 @@ func (dn *Dename) RePushState(peer *Peer, round int64) {
 		dn.SendToPeer(peer, &S2SMessage{Round: &round, Ack: signed_ack_bs})
 	}
 	rows.Close()
+
+	var our_signed_publish_bs []byte
+	err = dn.db.QueryRow(`SELECT signature FROM round_signatures
+			WHERE round = $1 AND server = $2`, round, dn.us.index).Scan(&our_signed_publish_bs)
+	if err != nil {
+		log.Print("Cannot load our signature for round ", round, ": ", err)
+	}
+	dn.SendToPeer(peer, &S2SMessage{Round: &round, Publish: our_signed_publish_bs})
 }
 
 func (dn *Dename) Tick(round int64) {
@@ -575,6 +581,7 @@ func (dn *Dename) Tick(round int64) {
 		log.Printf("Name \"%s\" transferred by option %d of %d", name, d+1, len(rqs))
 	}
 
+	//===== Update names locally =====//
 	prev_snapshot := int64(0)
 	if round != 0 {
 		err = dn.db.QueryRow(`SELECT naming_snapshot FROM rounds
@@ -628,5 +635,64 @@ func (dn *Dename) Tick(round int64) {
 		log.Fatalf("Wanted to set commit_time for 1 round, hit %d instead", n_updates)
 	}
 
-	log.Printf("end dn.Tick(%d) -> %x", round, *rootHash)
+	//===== Sign the new mapping =====//
+	our_publish_bs, err := proto.Marshal(&MappingRoot{Round: &round, Root: rootHash[:]})
+	if err != nil {
+		panic(err)
+	}
+	our_publish_bs = append([]byte("ROOT"), our_publish_bs...)
+	our_signed_publish_bs := dn.our_sk.Sign(our_publish_bs)
+	publish_s2s := &S2SMessage{Round: &round, Publish: our_signed_publish_bs}
+	err = dn.HandlePublish(dn.us, publish_s2s)
+	if err != nil {
+		panic(err)
+	}
+	dn.Broadcast(publish_s2s)
+
+	//===== Collect signatures from peers =====//
+	hasSigned := make([]bool, n)
+	sigs_remaining := n
+	rows, err = dn.db.Query("SELECT server,signature FROM round_signatures WHERE round = $1", round)
+	if err != nil {
+		log.Fatal("Cannot load signatures for round ", round, ": ", err)
+	}
+	go func() {
+		defer rows.Close()
+		for rows.Next() {
+			var signed_publish_bs []byte
+			var server int64
+			err := rows.Scan(&server, &signed_publish_bs)
+			if err != nil {
+				log.Fatal("Cannot load round signature from database: ", err)
+			}
+			pub_tmp := &S2SMessage{Server: &server, Round: &round, Publish: signed_publish_bs[:]}
+			select {
+			case dn.roots_for_consensus <- pub_tmp:
+			case <-quit:
+				return
+			}
+		}
+		<-quit
+	}()
+
+	for msg := range dn.roots_for_consensus {
+		if *msg.Round != round {
+			continue
+		}
+		peer := dn.peers[*msg.Server]
+		if !hasSigned[peer.index] {
+			sigs_remaining--
+			hasSigned[peer.index] = true
+		}
+		publish_bs := []byte{}
+		peer.UnmarshalVerify(msg.Publish, "ROOT", new(MappingRoot), &publish_bs)
+		if !bytes.Equal(publish_bs, our_publish_bs) {
+			log.Fatalf("Peer %d deviates from consensus:\n  %v\n  %v", peer.index, our_publish_bs, publish_bs)
+		}
+		if sigs_remaining == 0 {
+			break
+		}
+	}
+	quit <- struct{}{}
+	log.Printf("Round %d reached consensus at %x", round, *rootHash)
 }

@@ -37,7 +37,7 @@ func (dn *Dename) CreateTables() {
 	}
 
 	// round_signatures
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS round_keys (
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS round_signatures (
 		id bigserial not null primary key,
 		round bigint not null,
 		server integer not null,
