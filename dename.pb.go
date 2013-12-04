@@ -13,34 +13,107 @@ var _ = proto.Marshal
 var _ = &json.SyntaxError{}
 var _ = math.Inf
 
-type Queue struct {
-	Round            *int64   `protobuf:"varint,1,req,name=round" json:"round,omitempty"`
-	Server           *int64   `protobuf:"varint,2,req,name=server" json:"server,omitempty"`
-	Entries          [][]byte `protobuf:"bytes,3,rep,name=entries" json:"entries,omitempty"`
-	XXX_unrecognized []byte   `json:"-"`
+type S2SMessage struct {
+	Round  *int64 `protobuf:"varint,1,req,name=round" json:"round,omitempty"`
+	Server *int64 `protobuf:"varint,2,req,name=server" json:"server,omitempty"`
+	// one of the following:
+	PushQueue        []byte `protobuf:"bytes,3,opt,name=push_queue" json:"push_queue,omitempty"`
+	Commitment       []byte `protobuf:"bytes,4,opt,name=commitment" json:"commitment,omitempty"`
+	Ack              []byte `protobuf:"bytes,5,opt,name=ack" json:"ack,omitempty"`
+	RoundKey         []byte `protobuf:"bytes,6,opt,name=round_key" json:"round_key,omitempty"`
+	Publish          []byte `protobuf:"bytes,7,opt,name=publish" json:"publish,omitempty"`
+	XXX_unrecognized []byte `json:"-"`
 }
 
-func (m *Queue) Reset()         { *m = Queue{} }
-func (m *Queue) String() string { return proto.CompactTextString(m) }
-func (*Queue) ProtoMessage()    {}
+func (m *S2SMessage) Reset()         { *m = S2SMessage{} }
+func (m *S2SMessage) String() string { return proto.CompactTextString(m) }
+func (*S2SMessage) ProtoMessage()    {}
 
-func (m *Queue) GetRound() int64 {
+func (m *S2SMessage) GetRound() int64 {
 	if m != nil && m.Round != nil {
 		return *m.Round
 	}
 	return 0
 }
 
-func (m *Queue) GetServer() int64 {
+func (m *S2SMessage) GetServer() int64 {
 	if m != nil && m.Server != nil {
 		return *m.Server
 	}
 	return 0
 }
 
-func (m *Queue) GetEntries() [][]byte {
+func (m *S2SMessage) GetPushQueue() []byte {
 	if m != nil {
-		return m.Entries
+		return m.PushQueue
+	}
+	return nil
+}
+
+func (m *S2SMessage) GetCommitment() []byte {
+	if m != nil {
+		return m.Commitment
+	}
+	return nil
+}
+
+func (m *S2SMessage) GetAck() []byte {
+	if m != nil {
+		return m.Ack
+	}
+	return nil
+}
+
+func (m *S2SMessage) GetRoundKey() []byte {
+	if m != nil {
+		return m.RoundKey
+	}
+	return nil
+}
+
+func (m *S2SMessage) GetPublish() []byte {
+	if m != nil {
+		return m.Publish
+	}
+	return nil
+}
+
+type CommitData struct {
+	Round            *int64   `protobuf:"varint,1,req,name=round" json:"round,omitempty"`
+	Server           *int64   `protobuf:"varint,2,req,name=server" json:"server,omitempty"`
+	RoundKey         []byte   `protobuf:"bytes,3,req,name=round_key" json:"round_key,omitempty"`
+	TransactionQueue [][]byte `protobuf:"bytes,4,rep,name=transaction_queue" json:"transaction_queue,omitempty"`
+	XXX_unrecognized []byte   `json:"-"`
+}
+
+func (m *CommitData) Reset()         { *m = CommitData{} }
+func (m *CommitData) String() string { return proto.CompactTextString(m) }
+func (*CommitData) ProtoMessage()    {}
+
+func (m *CommitData) GetRound() int64 {
+	if m != nil && m.Round != nil {
+		return *m.Round
+	}
+	return 0
+}
+
+func (m *CommitData) GetServer() int64 {
+	if m != nil && m.Server != nil {
+		return *m.Server
+	}
+	return 0
+}
+
+func (m *CommitData) GetRoundKey() []byte {
+	if m != nil {
+		return m.RoundKey
+	}
+	return nil
+}
+
+func (m *CommitData) GetTransactionQueue() [][]byte {
+	if m != nil {
+		return m.TransactionQueue
 	}
 	return nil
 }
@@ -48,7 +121,7 @@ func (m *Queue) GetEntries() [][]byte {
 type Commitment struct {
 	Round            *int64 `protobuf:"varint,1,req,name=round" json:"round,omitempty"`
 	Server           *int64 `protobuf:"varint,2,req,name=server" json:"server,omitempty"`
-	QueueHash        []byte `protobuf:"bytes,3,req,name=queue_hash" json:"queue_hash,omitempty"`
+	Hash             []byte `protobuf:"bytes,4,req,name=hash" json:"hash,omitempty"`
 	XXX_unrecognized []byte `json:"-"`
 }
 
@@ -70,41 +143,65 @@ func (m *Commitment) GetServer() int64 {
 	return 0
 }
 
-func (m *Commitment) GetQueueHash() []byte {
+func (m *Commitment) GetHash() []byte {
 	if m != nil {
-		return m.QueueHash
+		return m.Hash
 	}
 	return nil
 }
 
-type RoundKey struct {
-	Round            *int64 `protobuf:"varint,1,req,name=round" json:"round,omitempty"`
-	Server           *int64 `protobuf:"varint,2,req,name=server" json:"server,omitempty"`
-	Key              []byte `protobuf:"bytes,3,req,name=key" json:"key,omitempty"`
+type Acknowledgement struct {
+	Commiter         *int64 `protobuf:"varint,1,req,name=commiter" json:"commiter,omitempty"`
+	Acker            *int64 `protobuf:"varint,2,req,name=acker" json:"acker,omitempty"`
+	Commitment       []byte `protobuf:"bytes,3,req,name=commitment" json:"commitment,omitempty"`
 	XXX_unrecognized []byte `json:"-"`
 }
 
-func (m *RoundKey) Reset()         { *m = RoundKey{} }
-func (m *RoundKey) String() string { return proto.CompactTextString(m) }
-func (*RoundKey) ProtoMessage()    {}
+func (m *Acknowledgement) Reset()         { *m = Acknowledgement{} }
+func (m *Acknowledgement) String() string { return proto.CompactTextString(m) }
+func (*Acknowledgement) ProtoMessage()    {}
 
-func (m *RoundKey) GetRound() int64 {
+func (m *Acknowledgement) GetCommiter() int64 {
+	if m != nil && m.Commiter != nil {
+		return *m.Commiter
+	}
+	return 0
+}
+
+func (m *Acknowledgement) GetAcker() int64 {
+	if m != nil && m.Acker != nil {
+		return *m.Acker
+	}
+	return 0
+}
+
+func (m *Acknowledgement) GetCommitment() []byte {
+	if m != nil {
+		return m.Commitment
+	}
+	return nil
+}
+
+type MappingRoot struct {
+	Round            *int64 `protobuf:"varint,1,req,name=round" json:"round,omitempty"`
+	Root             []byte `protobuf:"bytes,2,req,name=root" json:"root,omitempty"`
+	XXX_unrecognized []byte `json:"-"`
+}
+
+func (m *MappingRoot) Reset()         { *m = MappingRoot{} }
+func (m *MappingRoot) String() string { return proto.CompactTextString(m) }
+func (*MappingRoot) ProtoMessage()    {}
+
+func (m *MappingRoot) GetRound() int64 {
 	if m != nil && m.Round != nil {
 		return *m.Round
 	}
 	return 0
 }
 
-func (m *RoundKey) GetServer() int64 {
-	if m != nil && m.Server != nil {
-		return *m.Server
-	}
-	return 0
-}
-
-func (m *RoundKey) GetKey() []byte {
+func (m *MappingRoot) GetRoot() []byte {
 	if m != nil {
-		return m.Key
+		return m.Root
 	}
 	return nil
 }

@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"code.google.com/p/go.crypto/nacl/secretbox"
 	"crypto/rand"
 	"database/sql"
-	"encoding/binary"
 	"io"
 	"io/ioutil"
 	"log"
@@ -143,9 +141,5 @@ retry_transaction:
 		break
 	}
 
-	mb := new(bytes.Buffer)
-	mb.WriteByte(1)
-	binary.Write(mb, binary.LittleEndian, uint64(round))
-	mb.Write(rq_box)
-	dn.Broadcast(mb.Bytes())
+	dn.Broadcast(&S2SMessage{Round: &round, PushQueue: rq_box})
 }

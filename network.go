@@ -2,13 +2,14 @@ package main
 
 import (
 	"bytes"
+	"code.google.com/p/goprotobuf/proto"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"strings"
 	"sync"
-	"fmt"
 )
 
 func (dn *Dename) ListenForClients() {
@@ -112,27 +113,36 @@ func (peer *Peer) CloseConn() {
 	peer.conn = nil
 }
 
-func (dn *Dename) SendToPeer(peer *Peer, msg []byte) error {
+func (dn *Dename) SendToPeer(peer *Peer, msg *S2SMessage) error {
+	if msg.Server == nil {
+		msg.Server = &dn.us.index
+	}
+	sz := proto.Size(msg)
+	buf := bytes.NewBuffer(make([]byte, 0, 2+sz))
+	binary.Write(buf, binary.LittleEndian, uint16(sz))
+	msg_bs, err := proto.Marshal(msg)
+	if err != nil {
+		panic(err)
+	}
+	buf.Write(msg_bs)
+
 	peer.RLock()
 	conn := peer.conn
 	peer.RUnlock()
 	if conn == nil {
 		return errors.New(fmt.Sprintf("SendToPeer: No connection to %v present (%v)", peer.index, dn.us.index))
 	}
-	var buf bytes.Buffer
-	binary.Write(&buf, binary.LittleEndian, uint16(len(msg)))
-	buf.Write(msg)
-	_, err := conn.Write(buf.Bytes())
+	_, err = conn.Write(buf.Bytes())
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func (dn *Dename) Broadcast(msg []byte) {
+func (dn *Dename) Broadcast(msg *S2SMessage) {
 	for _, peer := range dn.addr2peer {
 		if peer.index != dn.us.index {
-			go func(peer *Peer){
+			go func(peer *Peer) {
 				err := dn.SendToPeer(peer, msg)
 				if err != nil {
 					log.Print(err)

@@ -50,10 +50,11 @@ func dename(cfg *Cfg) {
 	var err error
 	dn := &Dename{
 		addr2peer: make(map[string]*Peer),
-		peers:     make(map[int]*Peer),
+		peers:     make(map[int64]*Peer),
 
-		acks_for_consensus: make(chan VerifiedAckedCommitment),
-		keys_for_consensus: make(chan *RoundKey)}
+		acks_for_consensus:  make(chan *Acknowledgement),
+		keys_for_consensus:  make(chan *S2SMessage),
+		roots_for_consensus: make(chan *S2SMessage)}
 
 	dn.db, err = sql.Open("postgres", "user="+cfg.Database.User+" password="+cfg.Database.Password+" dbname="+cfg.Database.Name+" sslmode=disable")
 	if err != nil {
@@ -99,14 +100,14 @@ func dename(cfg *Cfg) {
 			log.Fatal("Cannot look up ", host, err)
 		}
 		addr := addr_struct.String()
-		dn.addr2peer[addr] = &Peer{index: i, addr: addr, pk: pk}
-		dn.peers[i] = dn.addr2peer[addr]
+		dn.addr2peer[addr] = &Peer{index: int64(i), addr: addr, pk: pk}
+		dn.peers[int64(i)] = dn.addr2peer[addr]
 
 		dn.db.Exec("INSERT INTO servers(id) VALUES($1)", i)
 		// TODO: should we catch any errors here?
 
 		if bytes.Equal(dn.our_sk.Entity.Bytes, pk_bytes) { // this entry refers to us
-			dn.us = dn.peers[i]
+			dn.us = dn.peers[int64(i)]
 			continue
 		}
 	}
