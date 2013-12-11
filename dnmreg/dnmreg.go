@@ -34,12 +34,17 @@ func main() {
 	}
 
 	cert := sk.Sign(atb_bytes, protocol.SIGN_TAG_TRANSFER)
+	msg_bs, err := proto.Marshal(&protocol.C2SMessage{TransferName: cert})
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	conn, err := net.Dial("tcp", os.Args[1])
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer conn.Close()
-	_, err = conn.Write(cert)
+	_, err = conn.Write(msg_bs)
 	if err != nil {
 		log.Fatal(err)
 	}

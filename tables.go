@@ -19,6 +19,7 @@ func (dn *Dename) CreateTables() {
 		id bigserial not null primary key,
 		end_time bigint not null,
 		commit_time bigint,
+		signed_root bytea,
 		naming_snapshot bigint);`)
 	if err != nil {
 		log.Fatal("Cannot create table rounds: ", err)
@@ -88,7 +89,9 @@ func (dn *Dename) CreateTables() {
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS name_mapping (
 		id bigserial not null primary key,
 		name bytea not null,
-		pubkey bytea not null);`)
+		pubkey bytea not null,
+		last_modified bigint not null,
+		FOREIGN KEY(last_modified) REFERENCES rounds(id));`)
 	if err != nil {
 		log.Fatal("Cannot create table name_mapping: ", err)
 	}

@@ -26,11 +26,12 @@ type Cfg struct {
 		Host string
 	}
 	Database struct {
-		Name     string
-		Host     string
-		Port     string
-		User     string
-		Password string
+		Name           string
+		Host           string
+		Port           string
+		User           string
+		Password       string
+		MaxConnections int
 	}
 	Naming struct {
 		StartTime int64
@@ -63,6 +64,7 @@ func dename(cfg *Cfg) {
 	}
 	defer dn.db.Close()
 	dn.CreateTables()
+	dn.db.SetMaxOpenConns(cfg.Database.MaxConnections)
 
 	dn.our_sk, err = sgp.LoadSecretKeyFromFile(cfg.General.SecretKeyFile)
 	if err != nil {

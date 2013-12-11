@@ -37,6 +37,30 @@ func (m *TransferName) GetName() []byte {
 	return nil
 }
 
+type C2SMessage struct {
+	TransferName     []byte `protobuf:"bytes,1,opt,name=transfer_name" json:"transfer_name,omitempty"`
+	Lookup           []byte `protobuf:"bytes,2,opt,name=lookup" json:"lookup,omitempty"`
+	XXX_unrecognized []byte `json:"-"`
+}
+
+func (m *C2SMessage) Reset()         { *m = C2SMessage{} }
+func (m *C2SMessage) String() string { return proto.CompactTextString(m) }
+func (*C2SMessage) ProtoMessage()    {}
+
+func (m *C2SMessage) GetTransferName() []byte {
+	if m != nil {
+		return m.TransferName
+	}
+	return nil
+}
+
+func (m *C2SMessage) GetLookup() []byte {
+	if m != nil {
+		return m.Lookup
+	}
+	return nil
+}
+
 type S2SMessage struct {
 	Round  *int64 `protobuf:"varint,1,req,name=round" json:"round,omitempty"`
 	Server *int64 `protobuf:"varint,2,req,name=server" json:"server,omitempty"`

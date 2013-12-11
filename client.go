@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"code.google.com/p/go.crypto/nacl/secretbox"
 	"crypto/rand"
 	"database/sql"
@@ -12,6 +13,7 @@ import (
 	"code.google.com/p/goprotobuf/proto"
 	"github.com/andres-erbsen/dename/protocol"
 	"github.com/andres-erbsen/sgp"
+	"github.com/daniel-ziegler/merklemap"
 )
 
 func (dn *Dename) ValidateRequest(rq_bs []byte) (name string, err error) {
@@ -57,10 +59,25 @@ func (dn *Dename) ValidateRequest(rq_bs []byte) (name string, err error) {
 
 func (dn *Dename) HandleClient(conn net.Conn) {
 	defer conn.Close()
-	rq_bs, err := ioutil.ReadAll(conn)
+	msg_bs, err := ioutil.ReadAll(conn)
 	if err != nil {
 		return
 	}
+	msg := &protocol.C2SMessage{}
+	err = proto.Unmarshal(msg_bs, msg)
+	if err != nil {
+		return
+	}
+
+	switch {
+	case msg.TransferName != nil:
+		dn.HandleTransfer(msg.TransferName)
+	case msg.Lookup != nil:
+		dn.HandleLookup(conn, msg.Lookup)
+	}
+}
+
+func (dn *Dename) HandleTransfer(rq_bs []byte) {
 	name, err := dn.ValidateRequest(rq_bs)
 	if err != nil {
 		return
@@ -81,12 +98,12 @@ retry_transaction:
 	for {
 		tx, err := dn.db.Begin()
 		if err != nil {
-			log.Fatalf("HandleClient: cannot start db transaction: %f", err)
+			log.Fatalf("HandleClient: cannot start db transaction: %s", err)
 		}
 		defer tx.Rollback()
 		_, err = tx.Exec("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
 		if err != nil {
-			log.Fatalf("HandleClient: cannot set db transaction level: %f", err)
+			log.Fatalf("HandleClient: cannot set db transaction level: %s", err)
 		}
 
 		var key_slice []byte
@@ -118,7 +135,7 @@ retry_transaction:
 			tx.Rollback()
 			continue retry_transaction
 		} else if err != nil {
-			log.Fatalf("Cannot insert \"%f\" to names_we_transfer: %f", name, err)
+			log.Fatalf("Cannot insert \"%f\" to names_we_transfer: %s", name, err)
 		}
 
 		rq_box = secretbox.Seal(rq_box[:0], rq_bs, nonce, key)
@@ -137,10 +154,53 @@ retry_transaction:
 			tx.Rollback()
 			continue retry_transaction
 		} else if err != nil {
-			log.Fatalf("HandleClient: cannot commit db transaction: %f", err)
+			log.Fatalf("HandleClient: cannot commit db transaction: %s", err)
 		}
 		break
 	}
 
 	dn.Broadcast(&protocol.S2SMessage{Round: &round, PushQueue: rq_box})
+}
+
+func (dn *Dename) HandleLookup(conn net.Conn, name []byte) {
+	var pk_bs []byte
+	var round int64
+	err := dn.db.QueryRow(`SELECT pubkey, last_modified FROM name_mapping
+							WHERE name = $1`, name).Scan(&pk_bs, &round)
+	if err != nil {
+		log.Fatalf("HandleLookup: load pubkey for %s: %s", name, err)
+	}
+	var signed_root_bs []byte
+	var snapshot int64
+	err = dn.db.QueryRow(`SELECT naming_snapshot, signed_root FROM rounds
+					WHERE id = $1`, round).Scan(&snapshot, &signed_root_bs)
+	if err != nil {
+		log.Fatalf("HandleLookup: load naming snapshot for round %d: %s", name, err)
+	}
+	naming := dn.merklemap.GetSnapshot(snapshot)
+	mapHandle, err := naming.OpenHandle()
+	if err != nil {
+		log.Fatalf("Error opening merklemap handle: %s", err)
+	}
+	name_hash := merklemap.Hash([]byte(name))
+	merkle_path, err := mapHandle.GetPath(name_hash)
+	if err != nil {
+		log.Fatalf("Read path to %s from merklemap: %s", name, err)
+	}
+
+	signed_root := new(sgp.Signed)
+	err = proto.Unmarshal(signed_root_bs, signed_root)
+	if err != nil {
+		log.Fatal("Invalid signed root in db: ", err)
+	}
+
+	rootdata := new(protocol.MappingRoot)
+	err = proto.Unmarshal(signed_root.Message, rootdata)
+	if err != nil {
+		log.Fatal("Invalid MappingRoot in db: ", err)
+	}
+
+	if !bytes.Equal(rootdata.Root, merkle_path.ComputeRootHash()) {
+		log.Fatal("MappingRoot in db does not match merklemap")
+	}
 }

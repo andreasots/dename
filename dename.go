@@ -587,7 +587,9 @@ func (dn *Dename) Tick(round int64) {
 		}
 	}
 
-	stmt, err := dn.db.Prepare(`UPDATE name_mapping SET pubkey = $1 WHERE name = $2`)
+	stmt, err := dn.db.Prepare(`UPDATE name_mapping
+					SET pubkey = $1, last_modified = $2
+					WHERE name = $3`)
 	if err != nil {
 		log.Fatalf("PREPARE: Update names in database: %s", err)
 	}
@@ -598,7 +600,7 @@ func (dn *Dename) Tick(round int64) {
 		log.Fatalf("Error opening merklemap handle: %s", err)
 	}
 	for name, pk := range name_rq {
-		_, err = stmt.Exec(pk, name)
+		_, err = stmt.Exec(pk, round, name)
 		if err != nil {
 			log.Fatalf("Update name \"%s\" in database: %s", name, err)
 		}
@@ -621,23 +623,17 @@ func (dn *Dename) Tick(round int64) {
 		log.Fatalf("Error closing merklemap handle: %s", err)
 	}
 
-	r, err := dn.db.Exec(`UPDATE rounds SET commit_time = $1, naming_snapshot = $2
-		WHERE id = $3 AND commit_time IS NULL`, time.Now().Unix(), newNaming.GetId(), round)
-	if err != nil {
-		log.Fatalf("Mark round %d as commited in database: %s", round, err)
-	}
-	n_updates, _ := r.RowsAffected()
-	if n_updates != 1 {
-		log.Fatalf("Wanted to set commit_time for 1 round, hit %d instead", n_updates)
-	}
-
 	//===== Sign the new mapping =====//
 	our_publish_bs, err := proto.Marshal(&protocol.MappingRoot{
 		Round: &round, Root: rootHash[:]})
 	if err != nil {
 		panic(err)
 	}
-	our_signed_publish_bs := dn.our_sk.Sign(our_publish_bs, protocol.SIGN_TAG_PUBLISH)
+	signed_root := dn.our_sk.SignPb(our_publish_bs, protocol.SIGN_TAG_PUBLISH)
+	our_signed_publish_bs, err := proto.Marshal(signed_root)
+	if err != nil {
+		panic(err)
+	}
 	publish_s2s := &protocol.S2SMessage{Server: &dn.us.index,
 		Round: &round, Publish: our_signed_publish_bs}
 	err = dn.HandlePublish(dn.us, publish_s2s)
@@ -678,20 +674,49 @@ func (dn *Dename) Tick(round int64) {
 			continue
 		}
 		peer := dn.peers[*msg.Server]
+		signed := new(sgp.Signed)
+		err = proto.Unmarshal(msg.Publish, signed)
+		if err != nil {
+			log.Fatal("Bad publish from %d: %f", peer.index, err)
+		}
+		if len(signed.Sigs) != 1 {
+			log.Fatalf("len(signed.Sigs) != 1 for publish from %d", peer.index)
+		}
+		if len(signed.KeyIds) != 1 {
+			log.Fatalf("len(signed.KeyIds) != 1 for publish from %d", peer.index)
+		}
+		if !peer.pk.VerifyPb(signed, protocol.SIGN_TAG_PUBLISH) {
+			log.Fatal("Invalid signature on publish from %d: %f", peer.index, err)
+		}
+		if !bytes.Equal(signed.Message, our_publish_bs) {
+			log.Fatalf("Peer %d deviates from consensus:\n  %v\n  %v", peer.index, our_publish_bs, signed.Message)
+		}
 		if !hasSigned[peer.index] {
 			sigs_remaining--
 			hasSigned[peer.index] = true
-		}
-		publish_bs := []byte{}
-		peer.UnmarshalVerify(msg.Publish, protocol.SIGN_TAG_PUBLISH,
-			new(protocol.MappingRoot), &publish_bs)
-		if !bytes.Equal(publish_bs, our_publish_bs) {
-			log.Fatalf("Peer %d deviates from consensus:\n  %v\n  %v", peer.index, our_publish_bs, publish_bs)
+			signed_root.Sigs = append(signed_root.Sigs, signed.Sigs[0])
+			signed_root.KeyIds = append(signed_root.KeyIds, signed.KeyIds[0])
 		}
 		if sigs_remaining == 0 {
 			break
 		}
 	}
 	quit <- struct{}{}
+	signed_root_bs, err := proto.Marshal(signed_root)
+	if err != nil {
+		panic(err)
+	}
+
+	r, err := dn.db.Exec(`UPDATE rounds SET commit_time = $1, naming_snapshot = $2,
+		signed_root = $3 WHERE id = $4 AND commit_time IS NULL`,
+		time.Now().Unix(), newNaming.GetId(), signed_root_bs, round)
+	if err != nil {
+		log.Fatalf("Mark round %d as commited in database: %s", round, err)
+	}
+	n_updates, _ := r.RowsAffected()
+	if n_updates != 1 {
+		log.Fatalf("Wanted to set commit_time for 1 round, hit %d instead", n_updates)
+	}
+
 	log.Printf("Round %d reached consensus at %x", round, *rootHash)
 }
