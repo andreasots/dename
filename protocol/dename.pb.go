@@ -2,7 +2,7 @@
 // source: dename.proto
 // DO NOT EDIT!
 
-package main
+package protocol
 
 import proto "code.google.com/p/goprotobuf/proto"
 import json "encoding/json"
@@ -12,6 +12,30 @@ import math "math"
 var _ = proto.Marshal
 var _ = &json.SyntaxError{}
 var _ = math.Inf
+
+type TransferName struct {
+	Pubkey           []byte `protobuf:"bytes,1,req,name=pubkey" json:"pubkey,omitempty"`
+	Name             []byte `protobuf:"bytes,2,req,name=name" json:"name,omitempty"`
+	XXX_unrecognized []byte `json:"-"`
+}
+
+func (m *TransferName) Reset()         { *m = TransferName{} }
+func (m *TransferName) String() string { return proto.CompactTextString(m) }
+func (*TransferName) ProtoMessage()    {}
+
+func (m *TransferName) GetPubkey() []byte {
+	if m != nil {
+		return m.Pubkey
+	}
+	return nil
+}
+
+func (m *TransferName) GetName() []byte {
+	if m != nil {
+		return m.Name
+	}
+	return nil
+}
 
 type S2SMessage struct {
 	Round  *int64 `protobuf:"varint,1,req,name=round" json:"round,omitempty"`

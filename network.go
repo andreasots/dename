@@ -10,6 +10,8 @@ import (
 	"net"
 	"strings"
 	"sync"
+
+	"github.com/andres-erbsen/dename/protocol"
 )
 
 func (dn *Dename) ListenForClients() {
@@ -112,7 +114,7 @@ func (peer *Peer) CloseConn() {
 	peer.conn = nil
 }
 
-func (dn *Dename) SendToPeer(peer *Peer, msg *S2SMessage) error {
+func (dn *Dename) SendToPeer(peer *Peer, msg *protocol.S2SMessage) error {
 	if msg.Server == nil {
 		msg.Server = &dn.us.index
 	}
@@ -138,7 +140,7 @@ func (dn *Dename) SendToPeer(peer *Peer, msg *S2SMessage) error {
 	return nil
 }
 
-func (dn *Dename) Broadcast(msg *S2SMessage) {
+func (dn *Dename) Broadcast(msg *protocol.S2SMessage) {
 	for _, peer := range dn.addr2peer {
 		if peer.index != dn.us.index {
 			go func(peer *Peer) {

@@ -16,11 +16,10 @@ import (
 	"time"
 
 	"code.google.com/p/goprotobuf/proto"
+	"github.com/andres-erbsen/dename/protocol"
 	"github.com/andres-erbsen/sgp"
 	"github.com/daniel-ziegler/merklemap"
 )
-
-var errTag = errors.New("Bad tag on signed message")
 
 type Peer struct {
 	index int64
@@ -43,15 +42,15 @@ type Dename struct {
 	client_lnr      net.Listener
 	RoundForClients sync.RWMutex
 
-	acks_for_consensus  chan *Acknowledgement
-	keys_for_consensus  chan *S2SMessage
-	roots_for_consensus chan *S2SMessage
+	acks_for_consensus  chan *protocol.Acknowledgement
+	keys_for_consensus  chan *protocol.S2SMessage
+	roots_for_consensus chan *protocol.S2SMessage
 
 	merklemap *merklemap.Map
 }
 
 func (dn *Dename) HandleMessage(peer *Peer, msg_bs []byte) (err error) {
-	msg := new(S2SMessage)
+	msg := new(protocol.S2SMessage)
 	err = proto.Unmarshal(msg_bs, msg)
 	if err != nil {
 		return
@@ -89,53 +88,49 @@ func (dn *Dename) HandlePush(peer *Peer, round int64, rq []byte) (err error) {
 	return
 }
 
-func (peer *Peer) UnmarshalVerify(signed_bs []byte, tag string,
+func (peer *Peer) UnmarshalVerify(signed_bs []byte, tag uint64,
 	pb proto.Message, signed_msg_bs_p *[]byte) (err error) {
 	if signed_msg_bs_p == nil {
 		signed_msg_bs_p = &[]byte{}
 	}
-	*signed_msg_bs_p, err = peer.pk.Verify(signed_bs)
+	*signed_msg_bs_p, err = peer.pk.Verify(signed_bs, tag)
 	if err != nil {
 		return
 	}
-	signed_msg_bs := *signed_msg_bs_p
-	if string(signed_msg_bs[:len(tag)]) != tag {
-		return errTag
-	}
-	err = proto.Unmarshal(signed_msg_bs[len(tag):], pb)
+	err = proto.Unmarshal(*signed_msg_bs_p, pb)
 	if err != nil {
 		return
 	}
 	return
 }
 
-func (dn *Dename) HandleCommitment(peer *Peer, msg *S2SMessage) (err error) {
-	commitment_msg := &Commitment{}
-	err = peer.UnmarshalVerify(msg.Commitment, "COMM", commitment_msg, nil)
+func (dn *Dename) HandleCommitment(peer *Peer, msg *protocol.S2SMessage) (err error) {
+	commitment_msg := &protocol.Commitment{}
+	err = peer.UnmarshalVerify(msg.Commitment, protocol.SIGN_TAG_COMMIT, commitment_msg, nil)
 	if err != nil {
 		return
 	}
 	if *commitment_msg.Server != peer.index {
 		return errors.New("Bad server id on commitment")
 	}
-	ack_msg := &Acknowledgement{Acker: &dn.us.index, Commiter: &peer.index,
+	ack_msg := &protocol.Acknowledgement{Acker: &dn.us.index, Commiter: &peer.index,
 		Commitment: msg.Commitment}
 	ack_bs, err := proto.Marshal(ack_msg)
 	if err != nil {
 		panic(err)
 	}
-	signed_ack_bs := dn.our_sk.Sign(append([]byte("ACKN"), ack_bs...))
+	signed_ack_bs := dn.our_sk.Sign(ack_bs, protocol.SIGN_TAG_ACK)
 	err = dn.HandleAck(dn.us, signed_ack_bs)
 	if err != nil {
 		panic(err)
 	}
-	dn.Broadcast(&S2SMessage{Round: msg.Round, Ack: signed_ack_bs})
+	dn.Broadcast(&protocol.S2SMessage{Round: msg.Round, Ack: signed_ack_bs})
 	return nil
 }
 
 func (dn *Dename) HandleAck(acker *Peer, signed_ack_bs []byte) (err error) {
-	ack_msg := new(Acknowledgement)
-	acker.UnmarshalVerify(signed_ack_bs, "ACKN", ack_msg, nil)
+	ack_msg := new(protocol.Acknowledgement)
+	acker.UnmarshalVerify(signed_ack_bs, protocol.SIGN_TAG_ACK, ack_msg, nil)
 	if err != nil {
 		return
 	}
@@ -143,8 +138,8 @@ func (dn *Dename) HandleAck(acker *Peer, signed_ack_bs []byte) (err error) {
 		return errors.New("Bad acker id on ack")
 	}
 	commiter := dn.peers[*ack_msg.Commiter]
-	commitment_msg := &Commitment{}
-	err = commiter.UnmarshalVerify(ack_msg.Commitment, "COMM", commitment_msg, nil)
+	commitment_msg := &protocol.Commitment{}
+	err = commiter.UnmarshalVerify(ack_msg.Commitment, protocol.SIGN_TAG_COMMIT, commitment_msg, nil)
 	if err != nil {
 		return
 	}
@@ -168,7 +163,7 @@ func (dn *Dename) HandleAck(acker *Peer, signed_ack_bs []byte) (err error) {
 	return
 }
 
-func (dn *Dename) HandleRoundKey(msg *S2SMessage) (err error) {
+func (dn *Dename) HandleRoundKey(msg *protocol.S2SMessage) (err error) {
 	_, err = dn.db.Exec(`INSERT INTO round_keys(round,server,key)
 			VALUES($1,$2,$3)`, *msg.Round, *msg.Server, msg.RoundKey)
 	if isPGError(err, pgErrorUniqueViolation) {
@@ -182,9 +177,9 @@ func (dn *Dename) HandleRoundKey(msg *S2SMessage) (err error) {
 	return
 }
 
-func (dn *Dename) HandlePublish(peer *Peer, msg *S2SMessage) (err error) {
-	mapping_root_msg := new(MappingRoot)
-	peer.UnmarshalVerify(msg.Publish, "ROOT", mapping_root_msg, nil)
+func (dn *Dename) HandlePublish(peer *Peer, msg *protocol.S2SMessage) (err error) {
+	mapping_root_msg := new(protocol.MappingRoot)
+	peer.UnmarshalVerify(msg.Publish, protocol.SIGN_TAG_PUBLISH, mapping_root_msg, nil)
 	if err != nil {
 		return
 	}
@@ -273,7 +268,7 @@ func (dn *Dename) ReadQueue(round, server int64) [][]byte {
 }
 
 func HashCommitData(round, commiter int64, key []byte, Q [][]byte) (cdata []byte, err error) {
-	commit_data_bytes, err := proto.Marshal(&CommitData{Round: &round, Server: &commiter, RoundKey: key, TransactionQueue: Q})
+	commit_data_bytes, err := proto.Marshal(&protocol.CommitData{Round: &round, Server: &commiter, RoundKey: key, TransactionQueue: Q})
 	if err != nil {
 		panic(err)
 	}
@@ -303,14 +298,14 @@ func (dn *Dename) BringUpToDate(peer *Peer) {
 		if err != nil {
 			log.Fatalf("RePushState: Cannot extract our round %d key: %f", prev_round, err)
 		}
-		dn.Broadcast(&S2SMessage{Round: &prev_round, RoundKey: our_round_key})
+		dn.Broadcast(&protocol.S2SMessage{Round: &prev_round, RoundKey: our_round_key})
 	}
 	dn.RePushState(peer, round)
 }
 
 func (dn *Dename) RePushState(peer *Peer, round int64) {
 	for _, rq_box := range dn.ReadQueue(round, dn.us.index) {
-		dn.SendToPeer(peer, &S2SMessage{Round: &round, PushQueue: rq_box})
+		dn.SendToPeer(peer, &protocol.S2SMessage{Round: &round, PushQueue: rq_box})
 	}
 
 	rows, err := dn.db.Query(`SELECT commiter, signature FROM
@@ -329,14 +324,14 @@ func (dn *Dename) RePushState(peer *Peer, round int64) {
 		}
 		// As we do not store commitments separately, send our own when seen
 		if commiter == dn.us.index {
-			ack_msg := &Acknowledgement{}
-			err = dn.us.UnmarshalVerify(signed_ack_bs, "ACKN", ack_msg, nil)
+			ack_msg := &protocol.Acknowledgement{}
+			err = dn.us.UnmarshalVerify(signed_ack_bs, protocol.SIGN_TAG_ACK, ack_msg, nil)
 			if err != nil {
 				log.Fatal("RePushState: our self-ack in DB is bad")
 			}
-			dn.SendToPeer(peer, &S2SMessage{Round: &round, Commitment: ack_msg.Commitment})
+			dn.SendToPeer(peer, &protocol.S2SMessage{Round: &round, Commitment: ack_msg.Commitment})
 		}
-		dn.SendToPeer(peer, &S2SMessage{Round: &round, Ack: signed_ack_bs})
+		dn.SendToPeer(peer, &protocol.S2SMessage{Round: &round, Ack: signed_ack_bs})
 	}
 	rows.Close()
 
@@ -346,7 +341,7 @@ func (dn *Dename) RePushState(peer *Peer, round int64) {
 	if err != nil {
 		log.Print("Cannot load our signature for round ", round, ": ", err)
 	}
-	dn.SendToPeer(peer, &S2SMessage{Round: &round, Publish: our_signed_publish_bs})
+	dn.SendToPeer(peer, &protocol.S2SMessage{Round: &round, Publish: our_signed_publish_bs})
 }
 
 func (dn *Dename) Tick(round int64) {
@@ -363,13 +358,13 @@ func (dn *Dename) Tick(round int64) {
 	if err != nil {
 		return
 	}
-	commitment_bs, err := proto.Marshal(&Commitment{Round: &round,
-		Server: &dn.us.index, Hash: qh})
+	commitment_bs, err := proto.Marshal(&protocol.Commitment{
+		Round: &round, Server: &dn.us.index, Hash: qh})
 	if err != nil {
 		panic(err)
 	}
-	signed_commitment_bs := dn.our_sk.Sign(append([]byte("COMM"), commitment_bs...))
-	commitment_s2s := &S2SMessage{Round: &round, Commitment: signed_commitment_bs}
+	signed_commitment_bs := dn.our_sk.Sign(commitment_bs, protocol.SIGN_TAG_COMMIT)
+	commitment_s2s := &protocol.S2SMessage{Round: &round, Commitment: signed_commitment_bs}
 	err = dn.HandleCommitment(dn.us, commitment_s2s)
 	if err != nil {
 		log.Fatal(err)
@@ -399,8 +394,8 @@ func (dn *Dename) Tick(round int64) {
 			if err != nil {
 				log.Fatal("Cannot load ack from database: ", err)
 			}
-			ack_msg := new(Acknowledgement)
-			dn.peers[acker].UnmarshalVerify(signed_ack_bs, "ACKN", ack_msg, nil)
+			ack_msg := new(protocol.Acknowledgement)
+			dn.peers[acker].UnmarshalVerify(signed_ack_bs, protocol.SIGN_TAG_ACK, ack_msg, nil)
 			if err != nil {
 				log.Fatal("Bad ack in database: ", err)
 			}
@@ -415,9 +410,9 @@ func (dn *Dename) Tick(round int64) {
 	}()
 
 	for ack_msg := range dn.acks_for_consensus {
-		commitment_msg := &Commitment{}
+		commitment_msg := &protocol.Commitment{}
 		err = dn.peers[*ack_msg.Commiter].UnmarshalVerify(ack_msg.Commitment,
-			"COMM", commitment_msg, nil)
+			protocol.SIGN_TAG_COMMIT, commitment_msg, nil)
 		if err != nil || *commitment_msg.Server != *ack_msg.Commiter {
 			log.Fatal("Bad ack in validated zone: ", err)
 		}
@@ -443,7 +438,7 @@ func (dn *Dename) Tick(round int64) {
 	quit <- struct{}{}
 
 	//===== Broadcast our round key =====//
-	dn.Broadcast(&S2SMessage{Round: &round, RoundKey: our_round_key})
+	dn.Broadcast(&protocol.S2SMessage{Round: &round, RoundKey: our_round_key})
 
 	//===== Receive round keys =====//
 	hasKeyed := make([]bool, n)
@@ -465,7 +460,8 @@ func (dn *Dename) Tick(round int64) {
 				log.Fatal("Cannot load key from database: ", err)
 			}
 			select {
-			case dn.keys_for_consensus <- &S2SMessage{Round: &round, Server: &server, RoundKey: key}:
+			case dn.keys_for_consensus <- &protocol.S2SMessage{
+				Round: &round, Server: &server, RoundKey: key}:
 			case <-quit:
 				return
 			}
@@ -636,13 +632,14 @@ func (dn *Dename) Tick(round int64) {
 	}
 
 	//===== Sign the new mapping =====//
-	our_publish_bs, err := proto.Marshal(&MappingRoot{Round: &round, Root: rootHash[:]})
+	our_publish_bs, err := proto.Marshal(&protocol.MappingRoot{
+		Round: &round, Root: rootHash[:]})
 	if err != nil {
 		panic(err)
 	}
-	our_publish_bs = append([]byte("ROOT"), our_publish_bs...)
-	our_signed_publish_bs := dn.our_sk.Sign(our_publish_bs)
-	publish_s2s := &S2SMessage{Server: &dn.us.index, Round: &round, Publish: our_signed_publish_bs}
+	our_signed_publish_bs := dn.our_sk.Sign(our_publish_bs, protocol.SIGN_TAG_PUBLISH)
+	publish_s2s := &protocol.S2SMessage{Server: &dn.us.index,
+		Round: &round, Publish: our_signed_publish_bs}
 	err = dn.HandlePublish(dn.us, publish_s2s)
 	if err != nil {
 		panic(err)
@@ -665,7 +662,8 @@ func (dn *Dename) Tick(round int64) {
 			if err != nil {
 				log.Fatal("Cannot load round signature from database: ", err)
 			}
-			pub_tmp := &S2SMessage{Server: &server, Round: &round, Publish: signed_publish_bs[:]}
+			pub_tmp := &protocol.S2SMessage{Server: &server,
+				Round: &round, Publish: signed_publish_bs[:]}
 			select {
 			case dn.roots_for_consensus <- pub_tmp:
 			case <-quit:
@@ -685,7 +683,8 @@ func (dn *Dename) Tick(round int64) {
 			hasSigned[peer.index] = true
 		}
 		publish_bs := []byte{}
-		peer.UnmarshalVerify(msg.Publish, "ROOT", new(MappingRoot), &publish_bs)
+		peer.UnmarshalVerify(msg.Publish, protocol.SIGN_TAG_PUBLISH,
+			new(protocol.MappingRoot), &publish_bs)
 		if !bytes.Equal(publish_bs, our_publish_bs) {
 			log.Fatalf("Peer %d deviates from consensus:\n  %v\n  %v", peer.index, our_publish_bs, publish_bs)
 		}

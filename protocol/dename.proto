@@ -1,3 +1,10 @@
+package protocol;
+
+message TransferName {
+        required bytes pubkey = 1;
+        required bytes name = 2;
+}
+
 message S2SMessage {
 	required int64 round = 1;
 	required int64 server = 2;
@@ -32,3 +39,4 @@ message MappingRoot {
 	required int64 round = 1;
 	required bytes root = 2;
 }
+

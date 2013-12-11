@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"code.google.com/p/gcfg"
+	"github.com/andres-erbsen/dename/protocol"
 	"github.com/andres-erbsen/sgp"
 	"github.com/daniel-ziegler/merklemap"
 )
@@ -52,9 +53,9 @@ func dename(cfg *Cfg) {
 		addr2peer: make(map[string]*Peer),
 		peers:     make(map[int64]*Peer),
 
-		acks_for_consensus:  make(chan *Acknowledgement),
-		keys_for_consensus:  make(chan *S2SMessage),
-		roots_for_consensus: make(chan *S2SMessage)}
+		acks_for_consensus:  make(chan *protocol.Acknowledgement),
+		keys_for_consensus:  make(chan *protocol.S2SMessage),
+		roots_for_consensus: make(chan *protocol.S2SMessage)}
 
 	dn.db, err = sql.Open("postgres", "user="+cfg.Database.User+" password="+cfg.Database.Password+" dbname="+cfg.Database.Name+" sslmode=disable")
 	if err != nil {

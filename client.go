@@ -10,6 +10,7 @@ import (
 	"net"
 
 	"code.google.com/p/goprotobuf/proto"
+	"github.com/andres-erbsen/dename/protocol"
 	"github.com/andres-erbsen/sgp"
 )
 
@@ -20,7 +21,7 @@ func (dn *Dename) ValidateRequest(rq_bs []byte) (name string, err error) {
 		return
 	}
 
-	new_mapping := &sgp.Attribution{}
+	new_mapping := &protocol.TransferName{}
 	err = proto.Unmarshal(signed_rq.Message, new_mapping)
 	if err != nil {
 		return
@@ -48,7 +49,7 @@ func (dn *Dename) ValidateRequest(rq_bs []byte) (name string, err error) {
 		log.Fatal(err) // FIXME: check error type
 	}
 
-	if !pk.VerifyPb(signed_rq) {
+	if !pk.VerifyPb(signed_rq, protocol.SIGN_TAG_TRANSFER) {
 		return
 	}
 	return name, nil
@@ -141,5 +142,5 @@ retry_transaction:
 		break
 	}
 
-	dn.Broadcast(&S2SMessage{Round: &round, PushQueue: rq_box})
+	dn.Broadcast(&protocol.S2SMessage{Round: &round, PushQueue: rq_box})
 }
