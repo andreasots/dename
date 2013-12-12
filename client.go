@@ -194,13 +194,26 @@ func (dn *Dename) HandleLookup(conn net.Conn, name []byte) {
 		log.Fatal("Invalid signed root in db: ", err)
 	}
 
-	rootdata := new(protocol.MappingRoot)
-	err = proto.Unmarshal(signed_root.Message, rootdata)
+	root := new(protocol.MappingRoot)
+	err = proto.Unmarshal(signed_root.Message, signed_root)
 	if err != nil {
 		log.Fatal("Invalid MappingRoot in db: ", err)
 	}
 
-	if !bytes.Equal(rootdata.Root, merkle_path.ComputeRootHash()) {
+	if !bytes.Equal(root.Root, merkle_path.ComputeRootHash()) {
 		log.Fatal("MappingRoot in db does not match merklemap")
 	}
+
+	response := new(protocol.LookupResponse)
+	response.Root = signed_root_bs
+	response.PublicKey = pk_bs
+	response.Path, err = proto.Marshal(merkle_path)
+	if err != nil {
+		panic(err)
+	}
+	response_bs, err := proto.Marshal(response)
+	if err != nil {
+		panic(err)
+	}
+	conn.Write(response_bs)
 }

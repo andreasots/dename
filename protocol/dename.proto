@@ -10,6 +10,12 @@ message C2SMessage {
 	optional bytes lookup = 2;
 }
 
+message LookupResponse {
+	required bytes root = 1;
+	required bytes path = 2;
+	required bytes public_key = 3;
+}
+
 message S2SMessage {
 	required int64 round = 1;
 	required int64 server = 2;

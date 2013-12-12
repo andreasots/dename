@@ -61,6 +61,38 @@ func (m *C2SMessage) GetLookup() []byte {
 	return nil
 }
 
+type LookupResponse struct {
+	Root             []byte `protobuf:"bytes,1,req,name=root" json:"root,omitempty"`
+	Path             []byte `protobuf:"bytes,2,req,name=path" json:"path,omitempty"`
+	PublicKey        []byte `protobuf:"bytes,3,req,name=public_key" json:"public_key,omitempty"`
+	XXX_unrecognized []byte `json:"-"`
+}
+
+func (m *LookupResponse) Reset()         { *m = LookupResponse{} }
+func (m *LookupResponse) String() string { return proto.CompactTextString(m) }
+func (*LookupResponse) ProtoMessage()    {}
+
+func (m *LookupResponse) GetRoot() []byte {
+	if m != nil {
+		return m.Root
+	}
+	return nil
+}
+
+func (m *LookupResponse) GetPath() []byte {
+	if m != nil {
+		return m.Path
+	}
+	return nil
+}
+
+func (m *LookupResponse) GetPublicKey() []byte {
+	if m != nil {
+		return m.PublicKey
+	}
+	return nil
+}
+
 type S2SMessage struct {
 	Round  *int64 `protobuf:"varint,1,req,name=round" json:"round,omitempty"`
 	Server *int64 `protobuf:"varint,2,req,name=server" json:"server,omitempty"`
