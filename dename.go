@@ -8,7 +8,6 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"errors"
-	_ "github.com/mattn/go-sqlite3"
 	"io"
 	"log"
 	"net"
