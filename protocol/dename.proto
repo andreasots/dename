@@ -1,13 +1,13 @@
 package protocol;
 
 message TransferName {
-        required bytes pubkey = 1;
+        required bytes public_key = 1;
         required bytes name = 2;
 }
 
 message C2SMessage {
 	optional bytes transfer_name = 1;
-	optional bytes lookup = 2;
+	optional string lookup = 2;
 }
 
 message LookupResponse {

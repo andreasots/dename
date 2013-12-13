@@ -14,7 +14,7 @@ var _ = &json.SyntaxError{}
 var _ = math.Inf
 
 type TransferName struct {
-	Pubkey           []byte `protobuf:"bytes,1,req,name=pubkey" json:"pubkey,omitempty"`
+	PublicKey        []byte `protobuf:"bytes,1,req,name=public_key" json:"public_key,omitempty"`
 	Name             []byte `protobuf:"bytes,2,req,name=name" json:"name,omitempty"`
 	XXX_unrecognized []byte `json:"-"`
 }
@@ -23,9 +23,9 @@ func (m *TransferName) Reset()         { *m = TransferName{} }
 func (m *TransferName) String() string { return proto.CompactTextString(m) }
 func (*TransferName) ProtoMessage()    {}
 
-func (m *TransferName) GetPubkey() []byte {
+func (m *TransferName) GetPublicKey() []byte {
 	if m != nil {
-		return m.Pubkey
+		return m.PublicKey
 	}
 	return nil
 }
@@ -38,9 +38,9 @@ func (m *TransferName) GetName() []byte {
 }
 
 type C2SMessage struct {
-	TransferName     []byte `protobuf:"bytes,1,opt,name=transfer_name" json:"transfer_name,omitempty"`
-	Lookup           []byte `protobuf:"bytes,2,opt,name=lookup" json:"lookup,omitempty"`
-	XXX_unrecognized []byte `json:"-"`
+	TransferName     []byte  `protobuf:"bytes,1,opt,name=transfer_name" json:"transfer_name,omitempty"`
+	Lookup           *string `protobuf:"bytes,2,opt,name=lookup" json:"lookup,omitempty"`
+	XXX_unrecognized []byte  `json:"-"`
 }
 
 func (m *C2SMessage) Reset()         { *m = C2SMessage{} }
@@ -54,11 +54,11 @@ func (m *C2SMessage) GetTransferName() []byte {
 	return nil
 }
 
-func (m *C2SMessage) GetLookup() []byte {
-	if m != nil {
-		return m.Lookup
+func (m *C2SMessage) GetLookup() string {
+	if m != nil && m.Lookup != nil {
+		return *m.Lookup
 	}
-	return nil
+	return ""
 }
 
 type LookupResponse struct {

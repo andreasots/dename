@@ -16,7 +16,7 @@ import (
 	"github.com/daniel-ziegler/merklemap"
 )
 
-func (dn *Dename) ValidateRequest(rq_bs []byte) (name string, err error) {
+func (dn *Dename) ValidateRequest(rq_bs []byte) (name string, new_pk *sgp.Entity, err error) {
 	signed_rq := &sgp.Signed{}
 	err = proto.Unmarshal(rq_bs, signed_rq)
 	if err != nil {
@@ -29,8 +29,8 @@ func (dn *Dename) ValidateRequest(rq_bs []byte) (name string, err error) {
 		return
 	}
 
-	new_pk := &sgp.Entity{}
-	err = new_pk.Parse(new_mapping.Pubkey)
+	new_pk = new(sgp.Entity)
+	err = new_pk.Parse(new_mapping.PublicKey)
 	if err != nil {
 		return
 	}
@@ -54,7 +54,8 @@ func (dn *Dename) ValidateRequest(rq_bs []byte) (name string, err error) {
 	if !pk.VerifyPb(signed_rq, protocol.SIGN_TAG_TRANSFER) {
 		return
 	}
-	return name, nil
+	err = nil
+	return
 }
 
 func (dn *Dename) HandleClient(conn net.Conn) {
@@ -73,12 +74,12 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 	case msg.TransferName != nil:
 		dn.HandleTransfer(msg.TransferName)
 	case msg.Lookup != nil:
-		dn.HandleLookup(conn, msg.Lookup)
+		dn.HandleLookup(conn, *msg.Lookup)
 	}
 }
 
 func (dn *Dename) HandleTransfer(rq_bs []byte) {
-	name, err := dn.ValidateRequest(rq_bs)
+	name, _, err := dn.ValidateRequest(rq_bs)
 	if err != nil {
 		return
 	}
@@ -162,12 +163,15 @@ retry_transaction:
 	dn.Broadcast(&protocol.S2SMessage{Round: &round, PushQueue: rq_box})
 }
 
-func (dn *Dename) HandleLookup(conn net.Conn, name []byte) {
-	var pk_bs []byte
+func (dn *Dename) HandleLookup(conn net.Conn, name string) {
+	var pk []byte
 	var round int64
 	err := dn.db.QueryRow(`SELECT pubkey, last_modified FROM name_mapping
-							WHERE name = $1`, name).Scan(&pk_bs, &round)
-	if err != nil {
+							WHERE name = $1`, name).Scan(&pk, &round)
+	if err == sql.ErrNoRows {
+		log.Printf("Could not find public key for name \"%s\": %s", name, err)
+		return
+	} else if err != nil {
 		log.Fatalf("HandleLookup: load pubkey for %s: %s", name, err)
 	}
 	var signed_root_bs []byte
@@ -195,7 +199,7 @@ func (dn *Dename) HandleLookup(conn net.Conn, name []byte) {
 	}
 
 	root := new(protocol.MappingRoot)
-	err = proto.Unmarshal(signed_root.Message, signed_root)
+	err = proto.Unmarshal(signed_root.Message, root)
 	if err != nil {
 		log.Fatal("Invalid MappingRoot in db: ", err)
 	}
@@ -204,16 +208,18 @@ func (dn *Dename) HandleLookup(conn net.Conn, name []byte) {
 		log.Fatal("MappingRoot in db does not match merklemap")
 	}
 
-	response := new(protocol.LookupResponse)
-	response.Root = signed_root_bs
-	response.PublicKey = pk_bs
-	response.Path, err = proto.Marshal(merkle_path)
+	path_bs, err := proto.Marshal(merkle_path)
 	if err != nil {
 		panic(err)
 	}
-	response_bs, err := proto.Marshal(response)
+
+	response_bs, err := proto.Marshal(&protocol.LookupResponse{
+		Root: signed_root_bs, Path: path_bs, PublicKey: pk})
 	if err != nil {
 		panic(err)
 	}
-	conn.Write(response_bs)
+	_, err = conn.Write(response_bs)
+	if err != nil {
+		log.Print(err)
+	}
 }

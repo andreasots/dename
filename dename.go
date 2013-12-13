@@ -527,9 +527,9 @@ func (dn *Dename) Tick(round int64) {
 	log.Print("All commitments verified")
 
 	//===== Decrypt the queues =====//
-	peers_rq := make([]map[string][]byte, n)
-	for i := range dn.peers { // only modify peers_rq in the main thread
-		peers_rq[i] = make(map[string][]byte)
+	peer_name_newpks := make([]map[string][]byte, n)
+	for i := range dn.peers { // only modify _name_newpks in the main thread
+		peer_name_newpks[i] = make(map[string][]byte)
 	}
 	for i := range dn.peers {
 		go func(i int64) {
@@ -543,16 +543,16 @@ func (dn *Dename) Tick(round int64) {
 				if !ok {
 					log.Fatalf("Decryption failed at %d from %d in round %d", i, j, round)
 				}
-				name, err := dn.ValidateRequest(rq_bs)
+				name, pk, err := dn.ValidateRequest(rq_bs)
 				if err != nil {
 					log.Fatalf("Validation failed for \"%s\" from %d in round %d",
 						name, i, round)
 				}
-				if _, present := peers_rq[i][name]; present {
+				if _, present := peer_name_newpks[i][name]; present {
 					log.Fatalf("Multiple requests for \"%s\" from %d in round %d",
 						name, i, round)
 				}
-				peers_rq[i][name] = rq_bs
+				peer_name_newpks[i][name] = pk.Bytes
 			}
 			quit <- struct{}{}
 		}(i)
@@ -562,18 +562,18 @@ func (dn *Dename) Tick(round int64) {
 	}
 
 	//===== Resolve conflicts =====//
-	name_rqs := make(map[string][][]byte)
+	name_newpks := make(map[string][][]byte)
 	for i := range dn.peers {
-		for name, rq_bs := range peers_rq[i] {
-			name_rqs[name] = append(name_rqs[name], rq_bs)
+		for name, pk := range peer_name_newpks[i] {
+			name_newpks[name] = append(name_newpks[name], pk)
 		}
 	}
-	name_rq := make(map[string][]byte)
-	for name, rqs := range name_rqs {
-		ByteSlices(rqs).Sort()
-		d := uint64(random_seed) % uint64(len(rqs))
-		name_rq[name] = rqs[d]
-		log.Printf("Name \"%s\" transferred by option %d of %d", name, d+1, len(rqs))
+	name_newpk := make(map[string][]byte)
+	for name, pks := range name_newpks {
+		ByteSlices(pks).Sort()
+		d := uint64(random_seed) % uint64(len(pks))
+		name_newpk[name] = pks[d]
+		log.Printf("Name \"%s\" transferred by option %d of %d", name, d+1, len(pks))
 	}
 
 	//===== Update names locally =====//
@@ -586,22 +586,35 @@ func (dn *Dename) Tick(round int64) {
 		}
 	}
 
-	stmt, err := dn.db.Prepare(`UPDATE name_mapping
-					SET pubkey = $1, last_modified = $2
-					WHERE name = $3`)
+	naming := dn.merklemap.GetSnapshot(prev_snapshot)
+	mapHandle, err := naming.OpenHandle()
+
+	stmt1, err := dn.db.Prepare(`UPDATE name_mapping
+				SET pubkey = $1, last_modified = $2
+				WHERE name = $3;`)
 	if err != nil {
 		log.Fatalf("PREPARE: Update names in database: %s", err)
 	}
-	defer stmt.Close()
-	naming := dn.merklemap.GetSnapshot(prev_snapshot)
-	mapHandle, err := naming.OpenHandle()
+	defer stmt1.Close()
+	stmt2, err := dn.db.Prepare(`
+				INSERT INTO name_mapping (pubkey, last_modified, name)
+				SELECT $1,$2,$3
+				WHERE NOT EXISTS (SELECT 1 FROM name_mapping WHERE name=$3);`)
+	if err != nil {
+		log.Fatalf("PREPARE: Update names in database: %s", err)
+	}
+	defer stmt2.Close()
 	if err != nil {
 		log.Fatalf("Error opening merklemap handle: %s", err)
 	}
-	for name, pk := range name_rq {
-		_, err = stmt.Exec(pk, round, name)
+	for name, pk := range name_newpk {
+		_, err = stmt1.Exec(pk, round, name)
 		if err != nil {
 			log.Fatalf("Update name \"%s\" in database: %s", name, err)
+		}
+		_, err = stmt2.Exec(pk, round, name)
+		if err != nil {
+			log.Fatalf("Insert name \"%s\" to database: %s", name, err)
 		}
 		name_hash := merklemap.Hash([]byte(name))
 		pk_hash := merklemap.Hash(pk)
@@ -610,7 +623,8 @@ func (dn *Dename) Tick(round int64) {
 			log.Fatalf("Update name \"%s\" in merklemap: %s", name, err)
 		}
 	}
-	stmt.Close()
+	stmt1.Close()
+	stmt2.Close()
 
 	rootHash, err := mapHandle.GetRootHash()
 	if err != nil {

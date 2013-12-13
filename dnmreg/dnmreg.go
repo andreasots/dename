@@ -26,7 +26,7 @@ func main() {
 
 	attribution := &protocol.TransferName{}
 	attribution.Name = []byte(os.Args[2])
-	attribution.Pubkey = pk_bs
+	attribution.PublicKey = pk_bs
 
 	atb_bytes, err := proto.Marshal(attribution)
 	if err != nil {
