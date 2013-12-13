@@ -183,7 +183,7 @@ func (dn *Dename) HandleLookup(conn net.Conn, name []byte) {
 		log.Fatalf("Error opening merklemap handle: %s", err)
 	}
 	name_hash := merklemap.Hash([]byte(name))
-	merkle_path, err := mapHandle.GetPath(name_hash)
+	pk_hash, merkle_path, err := mapHandle.GetPath(name_hash)
 	if err != nil {
 		log.Fatalf("Read path to %s from merklemap: %s", name, err)
 	}
@@ -200,7 +200,7 @@ func (dn *Dename) HandleLookup(conn net.Conn, name []byte) {
 		log.Fatal("Invalid MappingRoot in db: ", err)
 	}
 
-	if !bytes.Equal(root.Root, merkle_path.ComputeRootHash()) {
+	if !bytes.Equal(root.Root, merkle_path.ComputeRootHash(name_hash, pk_hash)) {
 		log.Fatal("MappingRoot in db does not match merklemap")
 	}
 
