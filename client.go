@@ -5,6 +5,7 @@ import (
 	"code.google.com/p/go.crypto/nacl/secretbox"
 	"crypto/rand"
 	"database/sql"
+	"errors"
 	"io"
 	"io/ioutil"
 	"log"
@@ -52,7 +53,7 @@ func (dn *Dename) ValidateRequest(rq_bs []byte) (name string, new_pk *sgp.Entity
 	}
 
 	if !pk.VerifyPb(signed_rq, protocol.SIGN_TAG_TRANSFER) {
-		return
+		return "", nil, errors.New("Signature verification failed")
 	}
 	err = nil
 	return
