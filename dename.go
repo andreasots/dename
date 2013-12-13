@@ -481,7 +481,7 @@ func (dn *Dename) Tick(round int64) {
 			hasKeyed[*msg.Server] = true
 			copy(roundKeys[*msg.Server][:], msg.RoundKey)
 			var rnd int64
-			err = binary.Read(bytes.NewBuffer(msg.RoundKey), binary.LittleEndian, rnd)
+			err = binary.Read(bytes.NewBuffer(msg.RoundKey), binary.LittleEndian, &rnd)
 			if err != nil {
 				log.Fatal("Cannot read uint64LE from key ", err)
 			}
