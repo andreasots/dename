@@ -57,7 +57,7 @@ func (r *Round) acceptRequests(rqs <-chan *protocol.TransferName) {
 // accept requests to the round after that. Therefore, acceptPushes
 // is started on round i+2.
 func (r *Round) acceptPushes() {
-	incoming := r.router.Receive(r.Id, isPush)
+	incoming := r.router.Receive(r.Id, S2S_PUSH)
 	for {
 		select {
 		case push, chan_open := <-incoming:
@@ -77,7 +77,7 @@ func (r *Round) acceptPushes() {
 // the next one right before sending out the last message other servers have to
 // wait for.
 func (r *Round) handleCommitments() {
-	incoming := r.router.Receive(r.Id, isCommitment)
+	incoming := r.router.Receive(r.Id, S2S_COMMITMENT)
 	for commitment := range incoming {
 		// TODO
 		checkCommitmentUnique(commitment)
@@ -96,7 +96,7 @@ func (r *Round) handleCommitments() {
 // Called together with handleCommitments because as soon as a commitment
 // is sent out, acknowledgements from all servers should follow.
 func (r *Round) handleAcknowledgements() {
-	incoming := r.router.Receive(r.Id, isAcknowledgement)
+	incoming := r.router.Receive(r.Id, S2S_ACKNOWLEDGEMENT)
 	for acknowledgement := range r.acknowledgements {
 		// TODO
 		r.checkCommitmentUnique(commitment)
@@ -114,7 +114,7 @@ func (r *Round) handleAcknowledgements() {
 // acknowledgements, handleKeys is started before we acknowledge the last
 // commitment of that round.
 func (r *Round) handleKeys() {
-	incoming := r.router.Receive(r.Id, isRoundKey)
+	incoming := r.router.Receive(r.Id, S2S_ROUNDKEY)
 	for key := range r.keys {
 		// TODO
 		if done {
@@ -129,7 +129,7 @@ func (r *Round) handleKeys() {
 // the queues, handlePublishes is started right before we reveal the key used to
 // encrypt our queue.
 func (r *Round) handlePublishes() {
-	incoming := r.router.Receive(r.Id, isPublish)
+	incoming := r.router.Receive(r.Id, S2S_PUBLISH)
 	for publish := range r.publishes {
 		// TODO
 		if done {
@@ -162,11 +162,13 @@ func (r *Round) handlePublishes() {
 func (r *Round) Process() {
 	time.Sleep(r.OpenAtLeastUntil.Sub(time.Now()))
 	close(r.afterRequests)
+
 	r.commitToQueue()
 
 	<-r.afterCommitments
 	close(r.afterPushes)
 	<-r.afterAcknowledgements
+
 	go r.handlePublishes()
 	r.revealRoundKey()
 
@@ -174,12 +176,11 @@ func (r *Round) Process() {
 	result := r.ProcessRequests()
 	go r.Next.handleCommitments()
 	go r.Next.handleAcknowledgements()
-	r.Next.Next = new(Round)
+	r.Next.Next = newRound(r.Next.Id + 1)
 	// TODO: initialize
 	go r.Next.Next.acceptPushes()
-
 	r.Publish(result)
 
 	<-r.afterPublishes
-	go r.Next.Process() // TODO: tail call optimization?
+	go r.Next.Process()
 }
