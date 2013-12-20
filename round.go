@@ -22,8 +22,10 @@ type Round struct {
 	afterPublishes        chan struct{}
 }
 
-func newRound() (r *Round) {
+func newRound(id int64, t time.Time) (r *Round) {
 	r = new(Round)
+	r.Id = id
+	r.OpenAtLeastUntil = t
 	r.afterRequests = make(chan struct{})
 	r.afterPushes = make(chan struct{})
 	r.afterCommitments = make(chan struct{})
@@ -60,7 +62,7 @@ func (r *Round) acceptPushes() {
 	incoming := r.router.Receive(r.Id, S2S_PUSH)
 	for {
 		select {
-		case push, chan_open := <-incoming:
+		case _, chan_open := <-incoming:
 			if !chan_open {
 				break
 			}
@@ -78,16 +80,16 @@ func (r *Round) acceptPushes() {
 // wait for.
 func (r *Round) handleCommitments() {
 	incoming := r.router.Receive(r.Id, S2S_COMMITMENT)
-	for commitment := range incoming {
+	for _ = range incoming {
 		// TODO
-		checkCommitmentUnique(commitment)
+		// checkCommitmentUnique(commitment)
 		// TODO
-		if done { // before ending out the ack
-			go r.handleKeys()
-		}
-		if done {
-			r.router.Close(incoming)
-		}
+		// if done { // before ending out the ack
+		// go r.handleKeys()
+		// }
+		// if done {
+		r.router.Close(incoming)
+		// }
 	}
 	close(r.afterCommitments)
 }
@@ -97,13 +99,13 @@ func (r *Round) handleCommitments() {
 // is sent out, acknowledgements from all servers should follow.
 func (r *Round) handleAcknowledgements() {
 	incoming := r.router.Receive(r.Id, S2S_ACKNOWLEDGEMENT)
-	for acknowledgement := range r.acknowledgements {
+	for _ = range incoming {
 		// TODO
-		r.checkCommitmentUnique(commitment)
+		// r.checkCommitmentUnique(commitment)
 		// TODO
-		if done {
-			r.router.Close(incoming)
-		}
+		// if done {
+		r.router.Close(incoming)
+		// }
 	}
 	close(r.afterAcknowledgements)
 }
@@ -115,11 +117,11 @@ func (r *Round) handleAcknowledgements() {
 // commitment of that round.
 func (r *Round) handleKeys() {
 	incoming := r.router.Receive(r.Id, S2S_ROUNDKEY)
-	for key := range r.keys {
+	for _ = range incoming {
 		// TODO
-		if done {
-			r.router.Close(r.keys)
-		}
+		// if done {
+		r.router.Close(incoming)
+		// }
 	}
 	close(r.afterKeys)
 }
@@ -130,11 +132,11 @@ func (r *Round) handleKeys() {
 // encrypt our queue.
 func (r *Round) handlePublishes() {
 	incoming := r.router.Receive(r.Id, S2S_PUBLISH)
-	for publish := range r.publishes {
+	for _ = range incoming {
 		// TODO
-		if done {
-			r.router.Close(incoming)
-		}
+		// if done {
+		r.router.Close(incoming)
+		// }
 	}
 	close(r.afterPublishes)
 }
@@ -163,23 +165,22 @@ func (r *Round) Process() {
 	time.Sleep(r.OpenAtLeastUntil.Sub(time.Now()))
 	close(r.afterRequests)
 
-	r.commitToQueue()
+	// r.commitToQueue()
 
 	<-r.afterCommitments
 	close(r.afterPushes)
 	<-r.afterAcknowledgements
 
 	go r.handlePublishes()
-	r.revealRoundKey()
+	// r.revealRoundKey()
 
 	<-r.afterKeys
-	result := r.ProcessRequests()
+	// result := r.ProcessRequests()
 	go r.Next.handleCommitments()
 	go r.Next.handleAcknowledgements()
-	r.Next.Next = newRound(r.Next.Id + 1)
-	// TODO: initialize
+	r.Next.Next = newRound(r.Next.Id+1, r.Next.OpenAtLeastUntil.Add(TICK_INTERVAL))
 	go r.Next.Next.acceptPushes()
-	r.Publish(result)
+	// r.Publish(result)
 
 	<-r.afterPublishes
 	go r.Next.Process()

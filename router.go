@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"github.com/andres-erbsen/dename/protocol"
 	"log"
 )
@@ -13,6 +14,8 @@ const (
 	S2S_PUBLISH
 )
 
+var errNoRoute = errors.New("Router: no route for message")
+
 type router_rule struct {
 	round int64
 	tp    int
@@ -23,6 +26,7 @@ type Router struct {
 	routes map[router_rule]chan *protocol.S2SMessage
 
 	msgs     chan *protocol.S2SMessage
+	msg_errs chan error
 	receives chan struct {
 		k  router_rule
 		ch chan *protocol.S2SMessage
@@ -56,8 +60,9 @@ func (rt *Router) Run(round int64, tp int) {
 			k := router_rule{*msg.Round, msgtype(msg)}
 			if ch, ok := rt.routes[k]; ok {
 				ch <- msg
+				rt.msg_errs <- nil
 			} else {
-				log.Printf("Router: unexpected message %v: %v", k, *msg)
+				rt.msg_errs <- errNoRoute
 			}
 		case rec := <-rt.receives:
 			if _, already := rt.routes[rec.k]; !already {
@@ -91,8 +96,9 @@ func (rt *Router) Close(ch chan *protocol.S2SMessage) {
 	rt.closech <- ch
 }
 
-func (rt *Router) Send(msg *protocol.S2SMessage) {
+func (rt *Router) Send(msg *protocol.S2SMessage) error {
 	rt.msgs <- msg
+	return <-rt.msg_errs
 }
 
 func (rt *Router) Stop(round, tp int64) {
