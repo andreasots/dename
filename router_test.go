@@ -8,8 +8,6 @@ import (
 
 func TestBasicRouting(t *testing.T) {
 	rt := newRouter()
-	go rt.Run()
-	defer rt.Stop()
 
 	x0s := rt.Receive(0, S2S_PUSH)
 	y0s := rt.Receive(0, S2S_ROUNDKEY)
