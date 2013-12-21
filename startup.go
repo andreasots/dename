@@ -7,7 +7,7 @@ import (
 	_ "github.com/bmizerany/pq"
 	"log"
 	"net"
-	"sort"
+	"strconv"
 	"time"
 
 	"code.google.com/p/gcfg"
@@ -23,7 +23,8 @@ type Cfg struct {
 	}
 
 	Peer map[string]*struct {
-		Host string
+		PublicKey string
+		Host      string
 	}
 	Database struct {
 		Name           string
@@ -77,17 +78,13 @@ func dename(cfg *Cfg) {
 	}
 	dn.merklemap = mm
 
-	// sort the peers by public keys
-	peer_b64_pks := make([]string, len(cfg.Peer))
-	i := 0
-	for k, _ := range cfg.Peer {
-		peer_b64_pks[i] = k
-		i++
-	}
-	sort.Strings(peer_b64_pks)
-
-	for i, pk_b64 := range peer_b64_pks {
-		host := cfg.Peer[pk_b64].Host
+	for i_str, peercfg := range cfg.Peer {
+		i_, err := strconv.Atoi(i_str)
+		if err != nil {
+			log.Fatal("Peer names must be integers, for example [peer \"1\"]")
+		}
+		i := int64(i_)
+		host, pk_b64 := peercfg.Host, peercfg.PublicKey
 		pk_bytes, err := base64.StdEncoding.DecodeString(pk_b64)
 		if err != nil {
 			log.Fatalf("Bad base64 as public key: %f (for %f)", err, host)
@@ -105,6 +102,9 @@ func dename(cfg *Cfg) {
 		addr := addr_struct.String()
 		dn.addr2peer[addr] = &Peer{index: int64(i), addr: addr, pk: pk}
 		dn.peers[int64(i)] = dn.addr2peer[addr]
+		if i+1 > dn.peer_max {
+			dn.peer_max = i + 1
+		}
 
 		dn.db.Exec("INSERT INTO servers(id) VALUES($1)", i)
 		// TODO: should we catch any errors here?

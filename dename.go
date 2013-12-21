@@ -36,6 +36,7 @@ type Dename struct {
 	us        *Peer
 	peers     map[int64]*Peer
 	addr2peer map[string]*Peer
+	peer_max  int64
 
 	peer_lnr        *net.TCPListener
 	client_lnr      net.Listener
@@ -372,10 +373,10 @@ func (dn *Dename) Tick(round int64) {
 
 	//===== Receive commitments and acknowledgements =====//
 	n := len(dn.addr2peer)
-	queueHash := make([][]byte, n)
-	hasAcked := make([][]bool, n)
+	queueHash := make([][]byte, dn.peer_max+1)
+	hasAcked := make([][]bool, dn.peer_max+1)
 	for i := range hasAcked {
-		hasAcked[i] = make([]bool, n)
+		hasAcked[i] = make([]bool, dn.peer_max+1)
 	}
 	acks_remaining := n * n
 
@@ -440,8 +441,8 @@ func (dn *Dename) Tick(round int64) {
 	dn.Broadcast(&protocol.S2SMessage{Round: &round, RoundKey: our_round_key})
 
 	//===== Receive round keys =====//
-	hasKeyed := make([]bool, n)
-	roundKeys := make([][32]byte, n)
+	hasKeyed := make([]bool, dn.peer_max+1)
+	roundKeys := make([][32]byte, dn.peer_max+1)
 	keys_remaining := n
 	random_seed := int64(0)
 
@@ -497,8 +498,8 @@ func (dn *Dename) Tick(round int64) {
 	quit <- struct{}{}
 
 	//===== Check the commitments =====//
-	queue := make([][][]byte, n)
-	queueOk := make([]bool, n)
+	queue := make([][][]byte, dn.peer_max+1)
+	queueOk := make([]bool, dn.peer_max+1)
 	for i := range dn.peers {
 		go func(i int64) {
 			var err error
@@ -527,7 +528,7 @@ func (dn *Dename) Tick(round int64) {
 	log.Print("All commitments verified")
 
 	//===== Decrypt the queues =====//
-	peer_name_newpks := make([]map[string][]byte, n)
+	peer_name_newpks := make([]map[string][]byte, dn.peer_max+1)
 	for i := range dn.peers { // only modify _name_newpks in the main thread
 		peer_name_newpks[i] = make(map[string][]byte)
 	}
@@ -656,7 +657,7 @@ func (dn *Dename) Tick(round int64) {
 	dn.Broadcast(publish_s2s)
 
 	//===== Collect signatures from peers =====//
-	hasSigned := make([]bool, n)
+	hasSigned := make([]bool, dn.peer_max+1)
 	sigs_remaining := n
 	rows, err = dn.db.Query("SELECT server,signature FROM round_signatures WHERE round = $1", round)
 	if err != nil {

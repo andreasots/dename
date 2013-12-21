@@ -29,8 +29,10 @@ CREATE ROLE \"$dbuser\" WITH LOGIN PASSWORD '$dbpassword';
 	sudo su - postgres -c "createdb $dbname -O $dbuser"
 	pk=$(go run $GOPATH/src/github.com/andres-erbsen/sgp/keygen/keygen.go 2>$dir/$1/sk | base64 | tr -d '\n')
 	echo "
-[peer \"$pk\"]
-host = $host" >> $tmp_peer_config
+[peer \"$1\"]
+host = $host
+publickey = $pk
+" >> $tmp_peer_config
 }
 mkdir $dir
 for i in $(seq 1 $count)

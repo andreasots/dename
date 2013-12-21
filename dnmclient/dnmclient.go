@@ -16,7 +16,8 @@ import (
 
 type Cfg struct {
 	Peer map[string]*struct {
-		Host string
+		PublicKey string
+		Host      string
 	}
 }
 
@@ -34,11 +35,11 @@ func New(cfgfile string) (dnmc *DenameClient, err error) {
 	}
 	dnmc.peer_pks = make([]*sgp.Entity, len(dnmc.cfg.Peer))
 	i := 0
-	for pk_b64, peer := range dnmc.cfg.Peer {
+	for _, peer := range dnmc.cfg.Peer {
 		if dnmc.server == "" {
 			dnmc.server = peer.Host
 		}
-		pk_bytes, err := base64.StdEncoding.DecodeString(pk_b64)
+		pk_bytes, err := base64.StdEncoding.DecodeString(peer.PublicKey)
 		if err != nil {
 			return nil, err
 		}
