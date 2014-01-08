@@ -29,11 +29,9 @@ func (dn *Dename) CreateTables() {
 		round bigint not null,
 		type integer not null,
 		from integer not null,
-		to integer not null,
 		message bytea unique not null,
 		FOREIGN KEY(round) REFERENCES rounds(id),
-		FOREIGN KEY(from) REFERENCES servers(id),
-		FOREIGN KEY(to) REFERENCES servers(id));`)
+		FOREIGN KEY(from) REFERENCES servers(id));`)
 	if err != nil {
 		log.Fatal("Cannot create table commitments: ", err)
 	}

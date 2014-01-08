@@ -9,13 +9,11 @@ import (
 // Round is a sequence of communication and computation steps that results in
 // zero or requests being handled, possibly mutating some shared state.
 type Round struct {
+	c *Consensus
+
 	Id               int64
 	OpenAtLeastUntil time.Time
-	QueueProcessor   QueueProcessor
 	Next             *Round
-
-	Router    *Router
-	Broadcast func(*protocol.S2SMessage)
 
 	afterRequests         chan struct{}
 	afterPushes           chan struct{}
@@ -28,13 +26,11 @@ type Round struct {
 	shared_prng *prng.PRNG
 }
 
-func newRound(id int64, t time.Time, router *Router, bcast func(*protocol.S2SMessage), qpr QueueProcessor) (r *Round) {
+func newRound(id int64, t time.Time, c *Consensus) (r *Round) {
 	r = new(Round)
 	r.Id = id
 	r.OpenAtLeastUntil = t
-	r.QueueProcessor = qpr
-	r.Router = router
-	r.Broadcast = bcast
+	r.c = c
 	r.afterRequests = make(chan struct{})
 	r.afterPushes = make(chan struct{})
 	r.afterCommitments = make(chan struct{})
@@ -69,7 +65,7 @@ func (r *Round) acceptRequests(rqs <-chan *protocol.TransferName) {
 // accept requests to the round after that. Therefore, acceptPushes
 // is started on round i+2.
 func (r *Round) acceptPushes() {
-	incoming := r.Router.Receive(r.Id, S2S_PUSH)
+	incoming := r.c.Router.Receive(r.Id, S2S_PUSH)
 	for {
 		select {
 		case _, chan_open := <-incoming:
@@ -78,7 +74,7 @@ func (r *Round) acceptPushes() {
 			}
 			// TODO: handle
 		case <-r.afterPushes:
-			r.Router.Close(incoming)
+			r.c.Router.Close(incoming)
 		}
 	}
 }
@@ -89,7 +85,7 @@ func (r *Round) acceptPushes() {
 // the next one right before sending out the last message other servers have to
 // wait for.
 func (r *Round) handleCommitments() {
-	incoming := r.Router.Receive(r.Id, S2S_COMMITMENT)
+	incoming := r.c.Router.Receive(r.Id, S2S_COMMITMENT)
 	for _ = range incoming {
 		// TODO
 		// checkCommitmentUnique(commitment)
@@ -98,7 +94,7 @@ func (r *Round) handleCommitments() {
 		// go r.handleKeys()
 		// }
 		// if done {
-		r.Router.Close(incoming)
+		r.c.Router.Close(incoming)
 		// }
 	}
 	close(r.afterCommitments)
@@ -108,13 +104,13 @@ func (r *Round) handleCommitments() {
 // Called together with handleCommitments because as soon as a commitment
 // is sent out, acknowledgements from all servers should follow.
 func (r *Round) handleAcknowledgements() {
-	incoming := r.Router.Receive(r.Id, S2S_ACKNOWLEDGEMENT)
+	incoming := r.c.Router.Receive(r.Id, S2S_ACKNOWLEDGEMENT)
 	for _ = range incoming {
 		// TODO
 		// r.checkCommitmentUnique(commitment)
 		// TODO
 		// if done {
-		r.Router.Close(incoming)
+		r.c.Router.Close(incoming)
 		// }
 	}
 	close(r.afterAcknowledgements)
@@ -126,11 +122,11 @@ func (r *Round) handleAcknowledgements() {
 // acknowledgements, handleKeys is started before we acknowledge the last
 // commitment of that round.
 func (r *Round) handleKeys() {
-	incoming := r.Router.Receive(r.Id, S2S_ROUNDKEY)
+	incoming := r.c.Router.Receive(r.Id, S2S_ROUNDKEY)
 	for _ = range incoming {
 		// TODO
 		// if done {
-		r.Router.Close(incoming)
+		r.c.Router.Close(incoming)
 		// }
 	}
 	close(r.afterKeys)
@@ -141,11 +137,11 @@ func (r *Round) handleKeys() {
 // the queues, handlePublishes is started right before we reveal the key used to
 // encrypt our queue.
 func (r *Round) handlePublishes() {
-	incoming := r.Router.Receive(r.Id, S2S_PUBLISH)
+	incoming := r.c.Router.Receive(r.Id, S2S_PUBLISH)
 	for _ = range incoming {
 		// TODO
 		// if done {
-		r.Router.Close(incoming)
+		r.c.Router.Close(incoming)
 		// }
 	}
 	close(r.afterPublishes)
@@ -170,7 +166,7 @@ func (r *Round) Publish(result []byte) {
 //
 // At most three rounds can be active at once. If we have not published the
 // signed result round i, other servers cannot have finalized it so the last
-// round they can be after requests to is i+1. If we have published the
+// round they can be accpeting requests for is i+1. If we have published the
 // signed result but have not yet received the results from others, it may be
 // still the case that they have proceeded: they may be processing round i+1 and
 // accepting requests for i+2 and pushing them to us.
@@ -188,10 +184,10 @@ func (r *Round) Process() {
 	// r.revealRoundKey()
 
 	<-r.afterKeys
-	result := r.QueueProcessor(r.requests, r.shared_prng)
+	result := r.c.QueueProcessor(r.requests, r.shared_prng)
 	go r.Next.handleCommitments()
 	go r.Next.handleAcknowledgements()
-	r.Next.Next = newRound(r.Next.Id+1, r.Next.OpenAtLeastUntil.Add(TICK_INTERVAL), r.Router, r.Broadcast, r.QueueProcessor)
+	r.Next.Next = newRound(r.Next.Id+1, r.Next.OpenAtLeastUntil.Add(TICK_INTERVAL), r.c)
 	go r.Next.Next.acceptPushes()
 	r.Publish(result)
 
