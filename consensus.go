@@ -9,15 +9,13 @@ import (
 	"log"
 )
 
-type Request []byte
-
 // QueueProcessor takes a map (server -> []request) and handles the
 // requests in some way. A randomness source shared between the servers
 // is also available, but care has to be taken to read from it in a
 // deterministic way. QueueProcessor should return a short description
 // (usually a hash) of the new state.
 // QueueProcessor :: Map Server [Request] -> Rand -> State -> State
-type QueueProcessor func(map[int64][]*Request, *prng.PRNG) []byte
+type QueueProcessor func(map[int64][]*protocol.TransferName, *prng.PRNG) []byte
 
 type Peer_ interface {
 	Send(*protocol.S2SMessage)

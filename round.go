@@ -22,7 +22,7 @@ type Round struct {
 	afterKeys             chan struct{}
 	afterPublishes        chan struct{}
 
-	requests    map[int64][]*Request
+	requests    map[int64][]*protocol.TransferName
 	shared_prng *prng.PRNG
 }
 
@@ -37,7 +37,7 @@ func newRound(id int64, t time.Time, c *Consensus) (r *Round) {
 	r.afterAcknowledgements = make(chan struct{})
 	r.afterKeys = make(chan struct{})
 	r.afterPublishes = make(chan struct{})
-	r.requests = make(map[int64][]*Request)
+	r.requests = make(map[int64][]*protocol.TransferName)
 	return
 }
 
