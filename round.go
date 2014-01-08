@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/andres-erbsen/dename/prng"
 	"github.com/andres-erbsen/dename/protocol"
 	"time"
 )
@@ -10,9 +11,11 @@ import (
 type Round struct {
 	Id               int64
 	OpenAtLeastUntil time.Time
+	QueueProcessor   QueueProcessor
 	Next             *Round
 
-	router *Router
+	Router    *Router
+	Broadcast func(*protocol.S2SMessage)
 
 	afterRequests         chan struct{}
 	afterPushes           chan struct{}
@@ -20,18 +23,25 @@ type Round struct {
 	afterAcknowledgements chan struct{}
 	afterKeys             chan struct{}
 	afterPublishes        chan struct{}
+
+	requests    map[int64][]*Request
+	shared_prng *prng.PRNG
 }
 
-func newRound(id int64, t time.Time) (r *Round) {
+func newRound(id int64, t time.Time, router *Router, bcast func(*protocol.S2SMessage), qpr QueueProcessor) (r *Round) {
 	r = new(Round)
 	r.Id = id
 	r.OpenAtLeastUntil = t
+	r.QueueProcessor = qpr
+	r.Router = router
+	r.Broadcast = bcast
 	r.afterRequests = make(chan struct{})
 	r.afterPushes = make(chan struct{})
 	r.afterCommitments = make(chan struct{})
 	r.afterAcknowledgements = make(chan struct{})
 	r.afterKeys = make(chan struct{})
 	r.afterPublishes = make(chan struct{})
+	r.requests = make(map[int64][]*Request)
 	return
 }
 
@@ -59,7 +69,7 @@ func (r *Round) acceptRequests(rqs <-chan *protocol.TransferName) {
 // accept requests to the round after that. Therefore, acceptPushes
 // is started on round i+2.
 func (r *Round) acceptPushes() {
-	incoming := r.router.Receive(r.Id, S2S_PUSH)
+	incoming := r.Router.Receive(r.Id, S2S_PUSH)
 	for {
 		select {
 		case _, chan_open := <-incoming:
@@ -68,7 +78,7 @@ func (r *Round) acceptPushes() {
 			}
 			// TODO: handle
 		case <-r.afterPushes:
-			r.router.Close(incoming)
+			r.Router.Close(incoming)
 		}
 	}
 }
@@ -79,7 +89,7 @@ func (r *Round) acceptPushes() {
 // the next one right before sending out the last message other servers have to
 // wait for.
 func (r *Round) handleCommitments() {
-	incoming := r.router.Receive(r.Id, S2S_COMMITMENT)
+	incoming := r.Router.Receive(r.Id, S2S_COMMITMENT)
 	for _ = range incoming {
 		// TODO
 		// checkCommitmentUnique(commitment)
@@ -88,7 +98,7 @@ func (r *Round) handleCommitments() {
 		// go r.handleKeys()
 		// }
 		// if done {
-		r.router.Close(incoming)
+		r.Router.Close(incoming)
 		// }
 	}
 	close(r.afterCommitments)
@@ -98,13 +108,13 @@ func (r *Round) handleCommitments() {
 // Called together with handleCommitments because as soon as a commitment
 // is sent out, acknowledgements from all servers should follow.
 func (r *Round) handleAcknowledgements() {
-	incoming := r.router.Receive(r.Id, S2S_ACKNOWLEDGEMENT)
+	incoming := r.Router.Receive(r.Id, S2S_ACKNOWLEDGEMENT)
 	for _ = range incoming {
 		// TODO
 		// r.checkCommitmentUnique(commitment)
 		// TODO
 		// if done {
-		r.router.Close(incoming)
+		r.Router.Close(incoming)
 		// }
 	}
 	close(r.afterAcknowledgements)
@@ -116,11 +126,11 @@ func (r *Round) handleAcknowledgements() {
 // acknowledgements, handleKeys is started before we acknowledge the last
 // commitment of that round.
 func (r *Round) handleKeys() {
-	incoming := r.router.Receive(r.Id, S2S_ROUNDKEY)
+	incoming := r.Router.Receive(r.Id, S2S_ROUNDKEY)
 	for _ = range incoming {
 		// TODO
 		// if done {
-		r.router.Close(incoming)
+		r.Router.Close(incoming)
 		// }
 	}
 	close(r.afterKeys)
@@ -131,14 +141,17 @@ func (r *Round) handleKeys() {
 // the queues, handlePublishes is started right before we reveal the key used to
 // encrypt our queue.
 func (r *Round) handlePublishes() {
-	incoming := r.router.Receive(r.Id, S2S_PUBLISH)
+	incoming := r.Router.Receive(r.Id, S2S_PUBLISH)
 	for _ = range incoming {
 		// TODO
 		// if done {
-		r.router.Close(incoming)
+		r.Router.Close(incoming)
 		// }
 	}
 	close(r.afterPublishes)
+}
+
+func (r *Round) Publish(result []byte) {
 }
 
 // Process processes the requests a round has received. It is assumed that the
@@ -160,7 +173,7 @@ func (r *Round) handlePublishes() {
 // round they can be after requests to is i+1. If we have published the
 // signed result but have not yet received the results from others, it may be
 // still the case that they have proceeded: they may be processing round i+1 and
-// after requests for i+2 and pushing them to us.
+// accepting requests for i+2 and pushing them to us.
 func (r *Round) Process() {
 	time.Sleep(r.OpenAtLeastUntil.Sub(time.Now()))
 	close(r.afterRequests)
@@ -175,12 +188,12 @@ func (r *Round) Process() {
 	// r.revealRoundKey()
 
 	<-r.afterKeys
-	// result := r.ProcessRequests()
+	result := r.QueueProcessor(r.requests, r.shared_prng)
 	go r.Next.handleCommitments()
 	go r.Next.handleAcknowledgements()
-	r.Next.Next = newRound(r.Next.Id+1, r.Next.OpenAtLeastUntil.Add(TICK_INTERVAL))
+	r.Next.Next = newRound(r.Next.Id+1, r.Next.OpenAtLeastUntil.Add(TICK_INTERVAL), r.Router, r.Broadcast, r.QueueProcessor)
 	go r.Next.Next.acceptPushes()
-	// r.Publish(result)
+	r.Publish(result)
 
 	<-r.afterPublishes
 	go r.Next.Process()
