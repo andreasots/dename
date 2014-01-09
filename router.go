@@ -34,18 +34,15 @@ func msgtype(msg *protocol.S2SMessage) int {
 }
 
 var errNoRoute = errors.New("Router: no route for message")
-var errRouterClose = errors.New("Router: unexpected close")
 
 type Router struct {
-	ruleof map[chan *protocol.S2SMessage]router_match
-	routes map[router_match]chan *protocol.S2SMessage
+	routes map[router_match]router_dst
 	sync.RWMutex
 }
 
 func newRouter() (rt *Router) {
 	rt = new(Router)
-	rt.ruleof = make(map[chan *protocol.S2SMessage]router_match)
-	rt.routes = make(map[router_match]chan *protocol.S2SMessage)
+	rt.routes = make(map[router_match]router_dst)
 	return rt
 }
 
@@ -54,43 +51,45 @@ type router_match struct {
 	tp    int
 }
 
-func (rt *Router) Receive(round int64, tp int) chan *protocol.S2SMessage {
-	ch := make(chan *protocol.S2SMessage)
-	k := router_match{round, tp}
-	rt.Lock()
-	defer rt.Unlock()
-	if _, already := rt.routes[k]; !already {
-		rt.routes[k] = ch
-		rt.ruleof[ch] = k
-	} else {
-		log.Fatalf("Router: ambiguity for %v", k)
-	}
-	return ch
+type router_dst struct {
+	closer chan struct{}
+	closed bool
+	f      router_handler
+	sync.Mutex
 }
 
-func (rt *Router) Close(ch chan *protocol.S2SMessage) error {
-	rt.Lock()
-	defer rt.Unlock()
-	if k, ok := rt.ruleof[ch]; ok {
-		delete(rt.routes, k)
-		delete(rt.ruleof, ch)
-		close(ch)
-		return nil
-	} else {
-		return errRouterClose
-	}
+// handle a message and return whether it was the last one
+type router_handler func(msg *protocol.S2SMessage) bool
+
+func (rt *Router) Receive(round int64, tp int, f router_handler) {
+	closer := make(chan struct{})
+	k := router_match{round, tp}
+	dst := router_dst{closer: closer, f: f}
+	func() {
+		rt.Lock()
+		defer rt.Unlock()
+		if _, already := rt.routes[k]; !already {
+			rt.routes[k] = dst
+		} else {
+			log.Fatalf("Router: ambiguity for %v", k)
+		}
+	}()
+	<-closer
 }
 
 func (rt *Router) Send(msg *protocol.S2SMessage) error {
 	k := router_match{*msg.Round, msgtype(msg)}
 	rt.RLock()
 	defer rt.RUnlock()
-	ch, ok := rt.routes[k]
-
-	if ok {
-		ch <- msg
-		return nil
-	} else {
-		return errNoRoute
+	if dst, ok := rt.routes[k]; ok {
+		dst.Lock()
+		defer dst.Unlock()
+		if !dst.closed {
+			if dst.closed = dst.f(msg); dst.closed {
+				close(dst.closer)
+			}
+			return nil
+		}
 	}
+	return errNoRoute
 }

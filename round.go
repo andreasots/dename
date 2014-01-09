@@ -65,18 +65,15 @@ func (r *round) acceptRequests(rqs <-chan *protocol.TransferName) {
 // accept requests to the round after that. Therefore, acceptPushes
 // is started on round i+2.
 func (r *round) acceptPushes() {
-	incoming := r.c.router.Receive(r.id, S2S_PUSH)
-	for {
+	r.c.router.Receive(r.id, S2S_PUSH, func(msg *protocol.S2SMessage) bool {
 		select {
-		case _, chan_open := <-incoming:
-			if !chan_open {
-				break
-			}
-			// TODO: handle
 		case <-r.afterPushes:
-			r.c.router.Close(incoming)
+			return true
+		default:
 		}
-	}
+		// TODO
+		return false
+	})
 }
 
 // handleCommitments acknowledges commitments
@@ -85,18 +82,16 @@ func (r *round) acceptPushes() {
 // the next one right before sending out the last message other servers have to
 // wait for.
 func (r *round) handleCommitments() {
-	incoming := r.c.router.Receive(r.id, S2S_COMMITMENT)
-	for _ = range incoming {
+	r.c.router.Receive(r.id, S2S_COMMITMENT, func(msg *protocol.S2SMessage) bool {
 		// TODO
-		// checkCommitmentUnique(commitment)
+		// checkCommitmentUnique(msg.Commitment)
 		// TODO
-		// if done { // before ending out the ack
+		// if done {
 		// go r.handleKeys()
 		// }
-		// if done {
-		r.c.router.Close(incoming)
-		// }
-	}
+		// TODO send out the ack
+		// return done
+	})
 	close(r.afterCommitments)
 }
 
@@ -104,15 +99,12 @@ func (r *round) handleCommitments() {
 // Called together with handleCommitments because as soon as a commitment
 // is sent out, acknowledgements from all servers should follow.
 func (r *round) handleAcknowledgements() {
-	incoming := r.c.router.Receive(r.id, S2S_ACKNOWLEDGEMENT)
-	for _ = range incoming {
+	r.c.router.Receive(r.id, S2S_ACKNOWLEDGEMENT, func(msg *protocol.S2SMessage) bool {
 		// TODO
-		// r.checkCommitmentUnique(commitment)
+		// r.checkCommitmentUnique(ack.Commitment)
 		// TODO
-		// if done {
-		r.c.router.Close(incoming)
-		// }
-	}
+		// return done
+	})
 	close(r.afterAcknowledgements)
 }
 
@@ -122,13 +114,10 @@ func (r *round) handleAcknowledgements() {
 // acknowledgements, handleKeys is started before we acknowledge the last
 // commitment of that round.
 func (r *round) handleKeys() {
-	incoming := r.c.router.Receive(r.id, S2S_ROUNDKEY)
-	for _ = range incoming {
+	r.c.router.Receive(r.id, S2S_ROUNDKEY, func(msg *protocol.S2SMessage) bool {
 		// TODO
-		// if done {
-		r.c.router.Close(incoming)
-		// }
-	}
+		// return done
+	})
 	close(r.afterKeys)
 }
 
@@ -137,13 +126,10 @@ func (r *round) handleKeys() {
 // the queues, handlePublishes is started right before we reveal the key used to
 // encrypt our queue.
 func (r *round) handlePublishes() {
-	incoming := r.c.router.Receive(r.id, S2S_PUBLISH)
-	for _ = range incoming {
+	r.c.router.Receive(r.id, S2S_PUBLISH, func(msg *protocol.S2SMessage) bool {
 		// TODO
-		// if done {
-		r.c.router.Close(incoming)
-		// }
-	}
+		// return done
+	})
 	close(r.afterPublishes)
 }
 
