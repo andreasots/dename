@@ -65,9 +65,10 @@ func (c *Consensus) RefreshPeer(id int64) {
 		log.Fatalf("last_round_we_sent_messages_in: %s", err)
 	}
 
-	rows, err := c.db.Query(`SELECT message FROM messages
-		WHERE from = $1 AND $2 < round AND round <= $3`,
-		c.our_id, last_round_they_signed, last_round_we_sent_messages_in)
+	// they may be missing our signature from the round they signed
+	rows, err := c.db.Query(`SELECT message FROM messages WHERE from = $1
+		AND ((round = $2 AND type = $4) OR ($2 < round AND round <= $3))`,
+		c.our_id, last_round_they_signed, last_round_we_sent_messages_in, S2S_PUBLISH)
 	if err != nil {
 		log.Fatalf("Cannot load outgoing messages: %s", err)
 	}
@@ -94,6 +95,11 @@ func (c *Consensus) OnMessage(msg_bs []byte) {
 	err := proto.Unmarshal(msg_bs, msg)
 	if err != nil {
 		log.Fatalf("OnMessage: proto.Unmarshal(msg_bs, msg): %s", err)
+	}
+	_, err = c.db.Exec(`INSERT INTO messages(round,type,from,message)
+		VALUES($1,$2,$3,$4)`, *msg.Round, msgtype(msg), *msg.Server, msg_bs)
+	if err != nil {
+		log.Fatalf("Insert our message to db %v: %s", msg, err)
 	}
 	c.router.Send(msg)
 }
