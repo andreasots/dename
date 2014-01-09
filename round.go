@@ -6,14 +6,14 @@ import (
 	"time"
 )
 
-// Round is a sequence of communication and computation steps that results in
+// round is a sequence of communication and computation steps that results in
 // zero or requests being handled, possibly mutating some shared state.
-type Round struct {
+type round struct {
 	c *Consensus
 
-	Id               int64
-	OpenAtLeastUntil time.Time
-	Next             *Round
+	id               int64
+	openAtLeastUntil time.Time
+	next             *round
 
 	afterRequests         chan struct{}
 	afterPushes           chan struct{}
@@ -26,10 +26,10 @@ type Round struct {
 	shared_prng *prng.PRNG
 }
 
-func newRound(id int64, t time.Time, c *Consensus) (r *Round) {
-	r = new(Round)
-	r.Id = id
-	r.OpenAtLeastUntil = t
+func newRound(id int64, t time.Time, c *Consensus) (r *round) {
+	r = new(round)
+	r.id = id
+	r.openAtLeastUntil = t
 	r.c = c
 	r.afterRequests = make(chan struct{})
 	r.afterPushes = make(chan struct{})
@@ -45,7 +45,7 @@ func newRound(id int64, t time.Time, c *Consensus) (r *Round) {
 // A round starts acceptRequests on the next round as soon soon as it
 // stops handling requests itself, handing the channel of incoming requests over
 // to the next round.
-func (r *Round) acceptRequests(rqs <-chan *protocol.TransferName) {
+func (r *round) acceptRequests(rqs <-chan *protocol.TransferName) {
 	for {
 		select {
 		case <-rqs:
@@ -54,7 +54,7 @@ func (r *Round) acceptRequests(rqs <-chan *protocol.TransferName) {
 			break
 		}
 	}
-	go r.Next.acceptRequests(rqs) // TODO: tail call optimization?
+	go r.next.acceptRequests(rqs) // TODO: tail call optimization?
 }
 
 // acceptPushes handles pushes from servers.
@@ -64,8 +64,8 @@ func (r *Round) acceptRequests(rqs <-chan *protocol.TransferName) {
 // finalize that round, other servers may start processing the next round and
 // accept requests to the round after that. Therefore, acceptPushes
 // is started on round i+2.
-func (r *Round) acceptPushes() {
-	incoming := r.c.Router.Receive(r.Id, S2S_PUSH)
+func (r *round) acceptPushes() {
+	incoming := r.c.router.Receive(r.id, S2S_PUSH)
 	for {
 		select {
 		case _, chan_open := <-incoming:
@@ -74,7 +74,7 @@ func (r *Round) acceptPushes() {
 			}
 			// TODO: handle
 		case <-r.afterPushes:
-			r.c.Router.Close(incoming)
+			r.c.router.Close(incoming)
 		}
 	}
 }
@@ -84,8 +84,8 @@ func (r *Round) acceptPushes() {
 // as it finalizes the previous one, a round starts handleCommitments on
 // the next one right before sending out the last message other servers have to
 // wait for.
-func (r *Round) handleCommitments() {
-	incoming := r.c.Router.Receive(r.Id, S2S_COMMITMENT)
+func (r *round) handleCommitments() {
+	incoming := r.c.router.Receive(r.id, S2S_COMMITMENT)
 	for _ = range incoming {
 		// TODO
 		// checkCommitmentUnique(commitment)
@@ -94,7 +94,7 @@ func (r *Round) handleCommitments() {
 		// go r.handleKeys()
 		// }
 		// if done {
-		r.c.Router.Close(incoming)
+		r.c.router.Close(incoming)
 		// }
 	}
 	close(r.afterCommitments)
@@ -103,14 +103,14 @@ func (r *Round) handleCommitments() {
 // handleAcknowledgements receives acknowledgements.
 // Called together with handleCommitments because as soon as a commitment
 // is sent out, acknowledgements from all servers should follow.
-func (r *Round) handleAcknowledgements() {
-	incoming := r.c.Router.Receive(r.Id, S2S_ACKNOWLEDGEMENT)
+func (r *round) handleAcknowledgements() {
+	incoming := r.c.router.Receive(r.id, S2S_ACKNOWLEDGEMENT)
 	for _ = range incoming {
 		// TODO
 		// r.checkCommitmentUnique(commitment)
 		// TODO
 		// if done {
-		r.c.Router.Close(incoming)
+		r.c.router.Close(incoming)
 		// }
 	}
 	close(r.afterAcknowledgements)
@@ -121,12 +121,12 @@ func (r *Round) handleAcknowledgements() {
 // As a server should not reveal their round key before they have seen all the
 // acknowledgements, handleKeys is started before we acknowledge the last
 // commitment of that round.
-func (r *Round) handleKeys() {
-	incoming := r.c.Router.Receive(r.Id, S2S_ROUNDKEY)
+func (r *round) handleKeys() {
+	incoming := r.c.router.Receive(r.id, S2S_ROUNDKEY)
 	for _ = range incoming {
 		// TODO
 		// if done {
-		r.c.Router.Close(incoming)
+		r.c.router.Close(incoming)
 		// }
 	}
 	close(r.afterKeys)
@@ -136,18 +136,18 @@ func (r *Round) handleKeys() {
 // As a server should not publish the result of a round before decrypting all
 // the queues, handlePublishes is started right before we reveal the key used to
 // encrypt our queue.
-func (r *Round) handlePublishes() {
-	incoming := r.c.Router.Receive(r.Id, S2S_PUBLISH)
+func (r *round) handlePublishes() {
+	incoming := r.c.router.Receive(r.id, S2S_PUBLISH)
 	for _ = range incoming {
 		// TODO
 		// if done {
-		r.c.Router.Close(incoming)
+		r.c.router.Close(incoming)
 		// }
 	}
 	close(r.afterPublishes)
 }
 
-func (r *Round) Publish(result []byte) {
+func (r *round) Publish(result []byte) {
 }
 
 // Process processes the requests a round has received. It is assumed that the
@@ -170,8 +170,8 @@ func (r *Round) Publish(result []byte) {
 // signed result but have not yet received the results from others, it may be
 // still the case that they have proceeded: they may be processing round i+1 and
 // accepting requests for i+2 and pushing them to us.
-func (r *Round) Process() {
-	time.Sleep(r.OpenAtLeastUntil.Sub(time.Now()))
+func (r *round) Process() {
+	time.Sleep(r.openAtLeastUntil.Sub(time.Now()))
 	close(r.afterRequests)
 
 	// r.commitToQueue()
@@ -185,12 +185,12 @@ func (r *Round) Process() {
 
 	<-r.afterKeys
 	result := r.c.QueueProcessor(r.requests, r.shared_prng)
-	go r.Next.handleCommitments()
-	go r.Next.handleAcknowledgements()
-	r.Next.Next = newRound(r.Next.Id+1, r.Next.OpenAtLeastUntil.Add(TICK_INTERVAL), r.c)
-	go r.Next.Next.acceptPushes()
+	go r.next.handleCommitments()
+	go r.next.handleAcknowledgements()
+	r.next.next = newRound(r.next.id+1, r.next.openAtLeastUntil.Add(TICK_INTERVAL), r.c)
+	go r.next.next.acceptPushes()
 	r.Publish(result)
 
 	<-r.afterPublishes
-	go r.Next.Process()
+	go r.next.Process()
 }
