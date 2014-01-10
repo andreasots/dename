@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"github.com/andres-erbsen/dename/prng"
 	"github.com/andres-erbsen/dename/protocol"
+	"github.com/andres-erbsen/dename/ringchannel"
 	"github.com/andres-erbsen/sgp"
 	"log"
+	"time"
 )
 
 // QueueProcessor takes a map (server -> []request) and handles the
@@ -32,6 +34,12 @@ type Consensus struct {
 	Peers  map[int64]Peer_
 
 	IncomingRequests chan *protocol.TransferName
+
+	IncomingMessagesIn, IncomingMessagesNext chan []byte
+}
+
+func (c *Consensus) Init() {
+	go ringchannel.RingIQ(c.IncomingMessagesIn, c.IncomingMessagesNext)
 }
 
 func (c *Consensus) broadcast(msg *protocol.S2SMessage) {
@@ -84,29 +92,79 @@ func (c *Consensus) RefreshPeer(id int64) {
 	}
 }
 
-func (c *Consensus) Run() {
+func (c *Consensus) Run(genesisTime time.Time) {
+	rows, err := c.db.Query(`SELECT id, close_time FROM rounds
+		WHERE signed_snapshot_hash IS NULL ORDER BY id`)
+	if err != nil {
+		log.Fatalf("Cannot load outgoing messages: %s", err)
+	}
+	defer rows.Close()
+
+	id := int64(0)
+	t := genesisTime
+	three_rounds := false
+	if rows.Next() { // 1st
+		var id, close_time_u int64
+		if err := rows.Scan(&id, &close_time_u); err != nil {
+			log.Fatalf("rows.Scan(&id, &close_time_u) 1: %s", err)
+		}
+		t = time.Unix(close_time_u, 0)
+		if !rows.Next() { //2nd
+			log.Fatal("Only one unfinished round!")
+		}
+		three_rounds = rows.Next() // 3rd
+		if rows.Next() {           // 4th
+			log.Fatal("More than three unfinished rounds")
+		}
+	}
+	rows.Close()
+
+	round := newRound(id, t, c)
+	go round.acceptRequests(c.IncomingRequests)
+	go round.acceptPushes()
+	go round.handleCommitments()
+	go round.handleAcknowledgements()
+	round.next = newRound(id+1, t.Add(TICK_INTERVAL), c)
+	go round.next.acceptPushes()
+	go round.Process()
+
+	c.replayRound(id)
+	c.replayRound(id + 1)
+	if three_rounds {
+		<-round.afterWeHavePublished
+		c.replayRound(id + 2)
+	}
+
+	go c.HandleMessages()
+
 	for id := range c.Peers {
 		go c.RefreshPeer(id)
 	}
 }
 
+func (c *Consensus) HandleMessages() {
+	for msg_bs := range IncomingMessagesNext {
+		msg := new(protocol.S2SMessage)
+		err := proto.Unmarshal(msg_bs, msg)
+		if err != nil {
+			log.Fatalf("OnMessage: proto.Unmarshal(msg_bs, msg): %s", err)
+		}
+		_, err = c.db.Exec(`INSERT INTO messages(round,type,from,message)
+			VALUES($1,$2,$3,$4)`, *msg.Round, msgtype(msg), *msg.Server, msg_bs)
+		if err != nil {
+			log.Fatalf("Insert our message to db %v: %s", msg, err)
+		}
+		c.router.Send(msg)
+	}
+}
+
 func (c *Consensus) OnMessage(msg_bs []byte) {
-	msg := new(protocol.S2SMessage)
-	err := proto.Unmarshal(msg_bs, msg)
-	if err != nil {
-		log.Fatalf("OnMessage: proto.Unmarshal(msg_bs, msg): %s", err)
-	}
-	_, err = c.db.Exec(`INSERT INTO messages(round,type,from,message)
-		VALUES($1,$2,$3,$4)`, *msg.Round, msgtype(msg), *msg.Server, msg_bs)
-	if err != nil {
-		log.Fatalf("Insert our message to db %v: %s", msg, err)
-	}
-	c.router.Send(msg)
+	c.IncomingMessagesIn <- msg_bs
 }
 
 func (c *Consensus) replayRound(round_n int64) {
 	rows, err := c.db.Query(`SELECT message FROM messages
-		WHERE round = $1 AND from != $2`, round_n, c.our_id)
+		WHERE round = $1 AND from != $2 ORDER BY id ASC`, round_n, c.our_id)
 	if err != nil {
 		log.Fatalf("Cannot load incoming messages for round %d: %s", round_n, err)
 	}

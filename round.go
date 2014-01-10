@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/andres-erbsen/dename/prng"
 	"github.com/andres-erbsen/dename/protocol"
+	"log"
 	"time"
 )
 
@@ -16,10 +17,10 @@ type round struct {
 	next             *round
 
 	afterRequests         chan struct{}
-	afterPushes           chan struct{}
 	afterCommitments      chan struct{}
 	afterAcknowledgements chan struct{}
 	afterKeys             chan struct{}
+	afterWeHavePublished  chan struct{}
 	afterPublishes        chan struct{}
 
 	requests    map[int64][]*protocol.TransferName
@@ -32,12 +33,18 @@ func newRound(id int64, t time.Time, c *Consensus) (r *round) {
 	r.openAtLeastUntil = t
 	r.c = c
 	r.afterRequests = make(chan struct{})
-	r.afterPushes = make(chan struct{})
 	r.afterCommitments = make(chan struct{})
 	r.afterAcknowledgements = make(chan struct{})
 	r.afterKeys = make(chan struct{})
+	r.afterWeHavePublished = make(chan struct{})
 	r.afterPublishes = make(chan struct{})
 	r.requests = make(map[int64][]*protocol.TransferName)
+
+	_, err := r.c.db.Exec(`INSERT INTO rounds(id, close_time)
+		VALUES($1,$2)`, id, t.Unix())
+	if err != nil && !isPGError(err, pgErrorUniqueViolation) {
+		log.Fatalf("Insert round id,close_time: %s", err)
+	}
 	return
 }
 
@@ -49,7 +56,7 @@ func (r *round) acceptRequests(rqs <-chan *protocol.TransferName) {
 	for {
 		select {
 		case <-rqs:
-			// TOCO: handle request
+			// TODO: handle request
 		case <-r.afterRequests:
 			break
 		}
@@ -66,11 +73,6 @@ func (r *round) acceptRequests(rqs <-chan *protocol.TransferName) {
 // is started on round i+2.
 func (r *round) acceptPushes() {
 	r.c.router.Receive(r.id, S2S_PUSH, func(msg *protocol.S2SMessage) bool {
-		select {
-		case <-r.afterPushes:
-			return true
-		default:
-		}
 		// TODO
 		return false
 	})
@@ -134,6 +136,7 @@ func (r *round) handlePublishes() {
 }
 
 func (r *round) Publish(result []byte) {
+	close(r.afterWeHavePublished)
 }
 
 // Process processes the requests a round has received. It is assumed that the
@@ -163,7 +166,7 @@ func (r *round) Process() {
 	// r.commitToQueue()
 
 	<-r.afterCommitments
-	close(r.afterPushes)
+	r.c.router.Close(r.id, S2S_PUSH)
 	<-r.afterAcknowledgements
 
 	go r.handlePublishes()

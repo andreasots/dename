@@ -17,8 +17,9 @@ func (dn *Dename) CreateTables() {
 	// rounds
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS rounds (
 		id bigserial not null primary key,
+		close_time bigint not null,
 		snapshot_number bigint,
-		snapshot_hash bytea);`)
+		signed_snapshot_hash bytea);`)
 	if err != nil {
 		log.Fatal("Cannot create table rounds: ", err)
 	}

@@ -48,7 +48,7 @@ func newRouter() (rt *Router) {
 
 type router_match struct {
 	round int64
-	tp    int
+	tp    int // message type
 }
 
 type router_dst struct {
@@ -74,7 +74,11 @@ func (rt *Router) Receive(round int64, tp int, f router_handler) {
 			log.Fatalf("Router: ambiguity for %v", k)
 		}
 	}()
+
 	<-closer
+	rt.Lock()
+	defer rt.Unlock()
+	delete(rt.routes, k)
 }
 
 func (rt *Router) Send(msg *protocol.S2SMessage) error {
@@ -92,4 +96,20 @@ func (rt *Router) Send(msg *protocol.S2SMessage) error {
 		}
 	}
 	return errNoRoute
+}
+
+func (rt *Router) Close(round int64, tp int) {
+	k := router_match{round, tp}
+	rt.RLock()
+	defer rt.RUnlock()
+	if dst, ok := rt.routes[k]; ok {
+		dst.Lock()
+		defer dst.Unlock()
+		if !dst.closed {
+			dst.closed = true
+			close(dst.closer)
+		}
+	} else {
+		log.Fatal("Router: unexpected close")
+	}
 }
