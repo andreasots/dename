@@ -8,6 +8,7 @@ import (
 	"github.com/andres-erbsen/dename/prng"
 	"github.com/andres-erbsen/dename/protocol"
 	"log"
+	"sync"
 	"time"
 )
 
@@ -27,11 +28,12 @@ type round struct {
 	afterWeHavePublished  chan struct{}
 	afterPublishes        chan struct{}
 
-	requests    map[int64]*[][]byte
-	pushes      map[int64]*[][]byte
-	commited    map[int64]*[]byte
-	keys        map[int64]*[32]byte
-	shared_prng *prng.PRNG
+	requests map[int64]*[][]byte
+	pushes   map[int64]*[][]byte
+	commited map[int64]*[]byte
+
+	our_round_key *[32]byte
+	shared_prng   *prng.PRNG
 
 	commitmentsRemaining, acknowledgersRemaining int
 }
@@ -47,29 +49,26 @@ func newRound(id int64, t time.Time, c *Consensus) (r *round) {
 	r.afterKeys = make(chan struct{})
 	r.afterWeHavePublished = make(chan struct{})
 	r.afterPublishes = make(chan struct{})
-	r.keys = make(map[int64]*[32]byte)
-	r.requests = make(map[int64]*[][]byte)
-	r.pushes = make(map[int64]*[][]byte)
-	r.commited = make(map[int64]*[]byte)
+	r.requests = make(map[int64]*[][]byte, len(r.c.Peers))
+	r.pushes = make(map[int64]*[][]byte, len(r.c.Peers))
+	r.commited = make(map[int64]*[]byte, len(r.c.Peers))
 	r.commitmentsRemaining = len(r.c.Peers)
 	r.acknowledgersRemaining = len(r.c.Peers) - 1 // don't track our own acks
 
 	for id := range c.Peers {
-		r.keys[id] = new([32]byte)
 		r.requests[id] = new([][]byte)
 		r.pushes[id] = new([][]byte)
 		r.commited[id] = nil
 	}
-	r.keys[c.our_id] = new([32]byte)
-	if _, err := rand.Read(r.keys[c.our_id][:]); err != nil {
-		log.Fatalf("rand.Read(r.keys[c.our_id][:]): %s", err)
+	if _, err := rand.Read(r.our_round_key[:]); err != nil {
+		log.Fatalf("rand.Read(r.our_round_key[:]):]): %s", err)
 	}
 
 	_, err := r.c.db.Exec(`INSERT INTO rounds(id, our_key, close_time)
-		VALUES($1,$2)`, id, r.keys[c.our_id][:], t.Unix())
+		VALUES($1,$2)`, id, r.our_round_key[:], t.Unix())
 	if isPGError(err, pgErrorUniqueViolation) {
 		if err := r.c.db.QueryRow(`SELECT our_key FROM rounds
-			WHERE id = $1`, id).Scan(r.keys[c.our_id][:]); err != nil {
+			WHERE id = $1`, id).Scan(r.our_round_key[:]); err != nil {
 			log.Fatalf("our_key FROM rounds: %s", err)
 		}
 	} else if err != nil {
@@ -93,7 +92,7 @@ func (r *round) acceptRequests(rqs <-chan []byte) {
 			}
 			nonce := new([24]byte)
 			copy(nonce[:], rq_box[:24])
-			secretbox.Seal(rq_box[24:], rq_bs, nonce, r.keys[r.c.our_id])
+			secretbox.Seal(rq_box[24:], rq_bs, nonce, r.our_round_key)
 			*r.pushes[r.c.our_id] = append(*r.pushes[r.c.our_id], rq_box)
 			*r.requests[r.c.our_id] = append(*r.requests[r.c.our_id], rq_box)
 			r.c.broadcast(&protocol.S2SMessage{Round: &r.id, PushQueue: rq_box})
@@ -208,10 +207,39 @@ func (r *round) handleAcknowledgements() {
 // acknowledgements, handleKeys is started before we acknowledge the last
 // commitment of that round.
 func (r *round) handleKeys() {
+	var decryptions sync.WaitGroup
+	keys := make(map[int64]*[32]byte, len(r.c.Peers))
 	r.c.router.Receive(r.id, S2S_ROUNDKEY, func(msg *protocol.S2SMessage) bool {
-		// TODO
-		// return done
+		if _, already := keys[*msg.Server]; !already {
+			keys[*msg.Server] = new([32]byte)
+			copy(keys[*msg.Server][:], msg.RoundKey)
+		} else if bytes.Equal(keys[*msg.Server][:], msg.RoundKey) {
+			return false
+		} else {
+			log.Fatalf("%d keys: %v and %v", keys[*msg.Server][:], msg.RoundKey)
+		}
+		decryptions.Add(2)
+		go func(peer_id int64, key *[32]byte) { // decrypt requests
+			defer decryptions.Done()
+			rqs := make([][]byte, len(*r.pushes[peer_id]))
+			nonce := new([24]byte)
+			for i, rq_box := range *r.pushes[peer_id] {
+				var ok bool
+				copy(nonce[:], rq_box[:24])
+				rqs[i], ok = secretbox.Open(nil, rq_box[24:], nonce, key)
+				if !ok {
+					log.Fatalf("Failed to decrypt %d's queue", peer_id)
+				}
+			}
+			*r.requests[peer_id] = rqs
+		}(*msg.Server, keys[*msg.Server])
+		go func(peer_id int64, key *[32]byte) { // verify commitments
+			// TODO
+		}(*msg.Server, keys[*msg.Server])
+		return len(keys)+1 == len(r.c.Peers) // our key is stored separately
 	})
+	// TODO: initialize shared secret
+	decryptions.Wait()
 	close(r.afterKeys)
 }
 
@@ -254,15 +282,14 @@ func (r *round) Publish(result []byte) {
 func (r *round) Process() {
 	time.Sleep(r.openAtLeastUntil.Sub(time.Now()))
 	close(r.afterRequests)
-
-	// r.commitToQueue()
+	r.commitToQueue()
 
 	<-r.afterCommitments
 	r.c.router.Close(r.id, S2S_PUSH)
 	<-r.afterAcknowledgements
 
 	go r.handlePublishes()
-	// r.revealRoundKey()
+	r.revealRoundKey()
 
 	<-r.afterKeys
 	result := r.c.QueueProcessor(r.requests, r.shared_prng)
