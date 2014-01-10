@@ -217,6 +217,10 @@ func (r *round) handleAcknowledgements() {
 	close(r.afterAcknowledgements)
 }
 
+func (r *round) revealRoundKey() {
+	r.c.broadcast(&protocol.S2SMessage{Round: &r.id, RoundKey: r.our_round_key[:]})
+}
+
 // handleKeys receives
 // keys and spawns workers to decrypt the queues.
 // As a server should not reveal their round key before they have seen all the
