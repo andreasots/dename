@@ -17,6 +17,7 @@ func (dn *Dename) CreateTables() {
 	// rounds
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS rounds (
 		id bigserial not null primary key,
+		our_key bytea not null,
 		close_time bigint not null,
 		snapshot_number bigint,
 		signed_snapshot_hash bytea);`)
@@ -48,10 +49,7 @@ func (dn *Dename) CreateTables() {
 
 	// name_locked
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS name_locked (
-		round bigint not null,
-		name bytea not null,
-		PRIMARY KEY(round, name),
-		FOREIGN KEY(round) REFERENCES rounds(id));`)
+		name bytea not null unique primary key);`)
 	if err != nil {
 		log.Fatal("Cannot create table name_locked: ", err)
 	}

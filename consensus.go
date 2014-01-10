@@ -17,7 +17,7 @@ import (
 // deterministic way. QueueProcessor should return a short description
 // (usually a hash) of the new state.
 // QueueProcessor :: Map Server [Request] -> Rand -> State -> State
-type QueueProcessor func(map[int64][]*protocol.TransferName, *prng.PRNG) []byte
+type QueueProcessor func(map[int64]*[][]byte, *prng.PRNG) []byte
 
 type Peer_ interface {
 	Send([]byte)
@@ -33,14 +33,14 @@ type Consensus struct {
 	router *Router
 	Peers  map[int64]Peer_
 
-	IncomingRequests chan *protocol.TransferName
+	IncomingRequests chan []byte
 
 	incomingMessagesIn, incomingMessagesNext chan []byte
 }
 
 func (c *Consensus) Init() {
-	incomingMessagesIn = make(chan []byte)
-	incomingMessagesNext = make(chan []byte)
+	c.incomingMessagesIn = make(chan []byte)
+	c.incomingMessagesNext = make(chan []byte)
 	go ringchannel.RingIQ(c.incomingMessagesIn, c.incomingMessagesNext)
 }
 
@@ -160,7 +160,7 @@ func (c *Consensus) OnMessage(msg_bs []byte) {
 }
 
 func (c *Consensus) handleMessages() {
-	for msg_bs := range incomingMessagesNext {
+	for msg_bs := range c.incomingMessagesNext {
 		c.handleMessage(msg_bs)
 	}
 }

@@ -7,7 +7,7 @@ message TransferName {
 
 message C2SMessage {
 	optional bytes transfer_name = 1;
-	optional string lookup = 2;
+	optional bytes lookup = 2;
 }
 
 message LookupResponse {

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"code.google.com/p/go.crypto/nacl/secretbox"
+	"crypto/rand"
 	"github.com/andres-erbsen/dename/prng"
 	"github.com/andres-erbsen/dename/protocol"
 	"log"
@@ -23,7 +25,9 @@ type round struct {
 	afterWeHavePublished  chan struct{}
 	afterPublishes        chan struct{}
 
-	requests    map[int64][]*protocol.TransferName
+	keys        map[int64]*[32]byte
+	requests    map[int64]*[][]byte
+	pushes      map[int64]*[][]byte
 	shared_prng *prng.PRNG
 }
 
@@ -38,11 +42,28 @@ func newRound(id int64, t time.Time, c *Consensus) (r *round) {
 	r.afterKeys = make(chan struct{})
 	r.afterWeHavePublished = make(chan struct{})
 	r.afterPublishes = make(chan struct{})
-	r.requests = make(map[int64][]*protocol.TransferName)
+	r.keys = make(map[int64]*[32]byte)
+	r.requests = make(map[int64]*[][]byte)
+	r.pushes = make(map[int64]*[][]byte)
 
-	_, err := r.c.db.Exec(`INSERT INTO rounds(id, close_time)
-		VALUES($1,$2)`, id, t.Unix())
-	if err != nil && !isPGError(err, pgErrorUniqueViolation) {
+	for id := range c.Peers {
+		r.keys[id] = new([32]byte)
+		r.requests[id] = new([][]byte)
+		r.pushes[id] = new([][]byte)
+	}
+	r.keys[c.our_id] = new([32]byte)
+	if _, err := rand.Read(r.keys[c.our_id][:]); err != nil {
+		log.Fatalf("rand.Read(r.keys[c.our_id][:]): %s", err)
+	}
+
+	_, err := r.c.db.Exec(`INSERT INTO rounds(id, our_key, close_time)
+		VALUES($1,$2)`, id, r.keys[c.our_id][:], t.Unix())
+	if isPGError(err, pgErrorUniqueViolation) {
+		if err := r.c.db.QueryRow(`SELECT our_key FROM rounds
+			WHERE id = $1`, id).Scan(r.keys[c.our_id][:]); err != nil {
+			log.Fatalf("our_key FROM rounds: %s", err)
+		}
+	} else if err != nil {
 		log.Fatalf("Insert round id,close_time: %s", err)
 	}
 	return
@@ -52,11 +73,20 @@ func newRound(id int64, t time.Time, c *Consensus) (r *round) {
 // A round starts acceptRequests on the next round as soon soon as it
 // stops handling requests itself, handing the channel of incoming requests over
 // to the next round.
-func (r *round) acceptRequests(rqs <-chan *protocol.TransferName) {
+func (r *round) acceptRequests(rqs <-chan []byte) {
 	for {
 		select {
-		case <-rqs:
-			// TODO: handle request
+		case rq_bs := <-rqs:
+			// 24:nonce || ...:encrypted message || secretbox.Overhead:auth
+			rq_box := make([]byte, 24, 24+len(rq_bs)+secretbox.Overhead)
+			if _, err := rand.Read(rq_box[:24]); err != nil {
+				log.Fatalf("rand.Read(rq_box[:24]): %f", err)
+			}
+			nonce := new([24]byte)
+			copy(nonce[:], rq_box[:24])
+			secretbox.Seal(rq_box[24:], rq_bs, nonce, r.keys[r.c.our_id])
+			*r.pushes[r.c.our_id] = append(*r.pushes[r.c.our_id], rq_box)
+			r.c.broadcast(&protocol.S2SMessage{Round: &r.id, PushQueue: rq_box})
 		case <-r.afterRequests:
 			break
 		}
@@ -185,11 +215,11 @@ func (r *round) Process() {
 }
 
 func (r *round) ColdStart() {
-	go r.acceptRequests(c.IncomingRequests)
+	go r.acceptRequests(r.c.IncomingRequests)
 	go r.acceptPushes()
 	go r.handleCommitments()
 	go r.handleAcknowledgements()
-	r.next = newRound(r.id+1, t.Add(TICK_INTERVAL), c)
+	r.next = newRound(r.id+1, r.openAtLeastUntil.Add(TICK_INTERVAL), r.c)
 	go r.next.acceptPushes()
 	go r.Process()
 }

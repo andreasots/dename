@@ -1,7 +1,5 @@
 package ringchannel
 
-import "github.com/andres-erbsen/dename/protocol"
-
 // Copyright 2010 Kyle Lemons
 // Copyright 2011 Google, Inc. (for changes on or after Feb. 22, 2011)
 //
