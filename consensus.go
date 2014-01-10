@@ -26,7 +26,7 @@ type Peer_ interface {
 
 type Consensus struct {
 	db             *sql.DB
-	our_sk         sgp.SecretKey
+	our_sk         *sgp.SecretKey
 	our_id         int64
 	QueueProcessor QueueProcessor
 
@@ -35,11 +35,13 @@ type Consensus struct {
 
 	IncomingRequests chan *protocol.TransferName
 
-	IncomingMessagesIn, IncomingMessagesNext chan []byte
+	incomingMessagesIn, incomingMessagesNext chan []byte
 }
 
 func (c *Consensus) Init() {
-	go ringchannel.RingIQ(c.IncomingMessagesIn, c.IncomingMessagesNext)
+	incomingMessagesIn = make(chan []byte)
+	incomingMessagesNext = make(chan []byte)
+	go ringchannel.RingIQ(c.incomingMessagesIn, c.incomingMessagesNext)
 }
 
 func (c *Consensus) broadcast(msg *protocol.S2SMessage) {
@@ -93,6 +95,10 @@ func (c *Consensus) RefreshPeer(id int64) {
 }
 
 func (c *Consensus) Run(genesisTime time.Time) {
+	for id := range c.Peers {
+		go c.RefreshPeer(id)
+	}
+
 	rows, err := c.db.Query(`SELECT id, close_time FROM rounds
 		WHERE signed_snapshot_hash IS NULL ORDER BY id`)
 	if err != nil {
@@ -120,13 +126,7 @@ func (c *Consensus) Run(genesisTime time.Time) {
 	rows.Close()
 
 	round := newRound(id, t, c)
-	go round.acceptRequests(c.IncomingRequests)
-	go round.acceptPushes()
-	go round.handleCommitments()
-	go round.handleAcknowledgements()
-	round.next = newRound(id+1, t.Add(TICK_INTERVAL), c)
-	go round.next.acceptPushes()
-	go round.Process()
+	round.ColdStart()
 
 	c.replayRound(id)
 	c.replayRound(id + 1)
@@ -135,31 +135,7 @@ func (c *Consensus) Run(genesisTime time.Time) {
 		c.replayRound(id + 2)
 	}
 
-	go c.HandleMessages()
-
-	for id := range c.Peers {
-		go c.RefreshPeer(id)
-	}
-}
-
-func (c *Consensus) HandleMessages() {
-	for msg_bs := range IncomingMessagesNext {
-		msg := new(protocol.S2SMessage)
-		err := proto.Unmarshal(msg_bs, msg)
-		if err != nil {
-			log.Fatalf("OnMessage: proto.Unmarshal(msg_bs, msg): %s", err)
-		}
-		_, err = c.db.Exec(`INSERT INTO messages(round,type,from,message)
-			VALUES($1,$2,$3,$4)`, *msg.Round, msgtype(msg), *msg.Server, msg_bs)
-		if err != nil {
-			log.Fatalf("Insert our message to db %v: %s", msg, err)
-		}
-		c.router.Send(msg)
-	}
-}
-
-func (c *Consensus) OnMessage(msg_bs []byte) {
-	c.IncomingMessagesIn <- msg_bs
+	c.handleMessages()
 }
 
 func (c *Consensus) replayRound(round_n int64) {
@@ -175,6 +151,30 @@ func (c *Consensus) replayRound(round_n int64) {
 		if err != nil {
 			log.Fatalf("msg from db: rows.Scan(&msg_bs): %s", err)
 		}
-		c.OnMessage(msg_bs)
+		c.handleMessage(msg_bs)
 	}
+}
+
+func (c *Consensus) OnMessage(msg_bs []byte) {
+	c.incomingMessagesIn <- msg_bs
+}
+
+func (c *Consensus) handleMessages() {
+	for msg_bs := range incomingMessagesNext {
+		c.handleMessage(msg_bs)
+	}
+}
+
+func (c *Consensus) handleMessage(msg_bs []byte) {
+	msg := new(protocol.S2SMessage)
+	err := proto.Unmarshal(msg_bs, msg)
+	if err != nil {
+		log.Fatalf("OnMessage: proto.Unmarshal(msg_bs, msg): %s", err)
+	}
+	_, err = c.db.Exec(`INSERT INTO messages(round,type,from,message)
+		VALUES($1,$2,$3,$4)`, *msg.Round, msgtype(msg), *msg.Server, msg_bs)
+	if err != nil {
+		log.Fatalf("Insert our message to db %v: %s", msg, err)
+	}
+	c.router.Send(msg)
 }

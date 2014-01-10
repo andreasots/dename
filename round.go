@@ -183,3 +183,13 @@ func (r *round) Process() {
 	<-r.afterPublishes
 	go r.next.Process()
 }
+
+func (r *round) ColdStart() {
+	go r.acceptRequests(c.IncomingRequests)
+	go r.acceptPushes()
+	go r.handleCommitments()
+	go r.handleAcknowledgements()
+	r.next = newRound(r.id+1, t.Add(TICK_INTERVAL), c)
+	go r.next.acceptPushes()
+	go r.Process()
+}
