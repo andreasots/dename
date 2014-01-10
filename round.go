@@ -117,6 +117,22 @@ func (r *round) acceptPushes() {
 	})
 }
 
+// commitToQueue hashes our queue, signs it and publishes the result
+func (r *round) commitToQueue() {
+	our_id := r.c.our_id
+	qh, _ := HashCommitData(r.id, our_id, r.our_round_key[:], *r.pushes[our_id])
+	commitment_bs, err := proto.Marshal(&protocol.Commitment{
+		Round: &r.id, Server: &our_id, Hash: qh})
+	if err != nil {
+		panic(err)
+	}
+	signed_commitment_bs := r.c.our_sk.Sign(commitment_bs, protocol.SIGN_TAG_COMMIT)
+	s2s := &protocol.S2SMessage{Round: &r.id, Commitment: signed_commitment_bs}
+	r.c.broadcast(s2s)
+}
+
+// checkCommitmentUnique checks that a commitment is valid and the peer has
+// not commited to anything else in this round
 func (r *round) checkCommitmentUnique(peer_id int64, signed_bs []byte) {
 	peer := r.c.Peers[peer_id]
 	commitment_bs, err := peer.PK().Verify(signed_bs, protocol.SIGN_TAG_COMMIT)
