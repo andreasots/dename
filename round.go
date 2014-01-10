@@ -279,7 +279,14 @@ func (r *round) handleKeys() {
 }
 
 func (r *round) Publish(result []byte) {
-	// TODO
+	publish_bs, err := proto.Marshal(&protocol.MappingRoot{
+		Round: &r.id, Root: result})
+	if err != nil {
+		panic(err)
+	}
+	signed_bs := r.c.our_sk.Sign(publish_bs, protocol.SIGN_TAG_PUBLISH)
+	r.c.broadcast(&protocol.S2SMessage{Server: &r.c.our_id,
+		Round: &r.id, Publish: signed_bs})
 	close(r.afterWeHavePublished)
 }
 
