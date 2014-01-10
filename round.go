@@ -234,7 +234,11 @@ func (r *round) handleKeys() {
 			*r.requests[peer_id] = rqs
 		}(*msg.Server, keys[*msg.Server])
 		go func(peer_id int64, key *[32]byte) { // verify commitments
-			// TODO
+			defer decryptions.Done()
+			qh, _ := HashCommitData(r.id, peer_id, key[:], *r.pushes[peer_id])
+			if !bytes.Equal(qh, *r.commited[peer_id]) {
+				log.Fatal("%d has bad queue hash", peer_id)
+			}
 		}(*msg.Server, keys[*msg.Server])
 		return len(keys)+1 == len(r.c.Peers) // our key is stored separately
 	})
