@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"code.google.com/p/go.crypto/nacl/secretbox"
+	"code.google.com/p/goprotobuf/proto"
 	"crypto/rand"
 	"github.com/andres-erbsen/dename/prng"
 	"github.com/andres-erbsen/dename/protocol"
@@ -25,10 +27,13 @@ type round struct {
 	afterWeHavePublished  chan struct{}
 	afterPublishes        chan struct{}
 
-	keys        map[int64]*[32]byte
 	requests    map[int64]*[][]byte
 	pushes      map[int64]*[][]byte
+	commited    map[int64]*[]byte
+	keys        map[int64]*[32]byte
 	shared_prng *prng.PRNG
+
+	commitmentsRemaining, acknowledgersRemaining int
 }
 
 func newRound(id int64, t time.Time, c *Consensus) (r *round) {
@@ -45,11 +50,15 @@ func newRound(id int64, t time.Time, c *Consensus) (r *round) {
 	r.keys = make(map[int64]*[32]byte)
 	r.requests = make(map[int64]*[][]byte)
 	r.pushes = make(map[int64]*[][]byte)
+	r.commited = make(map[int64]*[]byte)
+	r.commitmentsRemaining = len(r.c.Peers)
+	r.acknowledgersRemaining = len(r.c.Peers) - 1 // don't track our own acks
 
 	for id := range c.Peers {
 		r.keys[id] = new([32]byte)
 		r.requests[id] = new([][]byte)
 		r.pushes[id] = new([][]byte)
+		r.commited[id] = nil
 	}
 	r.keys[c.our_id] = new([32]byte)
 	if _, err := rand.Read(r.keys[c.our_id][:]); err != nil {
@@ -86,6 +95,7 @@ func (r *round) acceptRequests(rqs <-chan []byte) {
 			copy(nonce[:], rq_box[:24])
 			secretbox.Seal(rq_box[24:], rq_bs, nonce, r.keys[r.c.our_id])
 			*r.pushes[r.c.our_id] = append(*r.pushes[r.c.our_id], rq_box)
+			*r.requests[r.c.our_id] = append(*r.requests[r.c.our_id], rq_box)
 			r.c.broadcast(&protocol.S2SMessage{Round: &r.id, PushQueue: rq_box})
 		case <-r.afterRequests:
 			break
@@ -103,9 +113,30 @@ func (r *round) acceptRequests(rqs <-chan []byte) {
 // is started on round i+2.
 func (r *round) acceptPushes() {
 	r.c.router.Receive(r.id, S2S_PUSH, func(msg *protocol.S2SMessage) bool {
-		// TODO
+		*r.pushes[*msg.Server] = append(*r.pushes[*msg.Server], msg.PushQueue)
 		return false
 	})
+}
+
+func (r *round) checkCommitmentUnique(peer_id int64, signed_bs []byte) {
+	peer := r.c.Peers[peer_id]
+	commitment_bs, err := peer.PK().Verify(signed_bs, protocol.SIGN_TAG_COMMIT)
+	if err != nil {
+		log.Fatalf("peer.PK().Verify(bs, protocol.SIGN_TAG_COMMIT): %s", err)
+	}
+	commitment := new(protocol.Commitment)
+	if err := proto.Unmarshal(commitment_bs, commitment); err != nil {
+		log.Fatalf("proto.Unmarshal(commitment_bs, commitment): %s", err)
+	}
+	if *commitment.Round != r.id || *commitment.Server != peer_id {
+		log.Fatalf("Inconsistently labelled commitment")
+	}
+	if *r.commited[peer_id] == nil {
+		*r.commited[peer_id] = commitment.Hash
+		r.commitmentsRemaining--
+	} else if !bytes.Equal(*r.commited[peer_id], commitment.Hash) {
+		log.Fatal("Duplicate commitments from %d: %v and %v", peer_id, *r.commited[peer_id], commitment.Hash)
+	}
 }
 
 // handleCommitments acknowledges commitments
@@ -114,15 +145,22 @@ func (r *round) acceptPushes() {
 // the next one right before sending out the last message other servers have to
 // wait for.
 func (r *round) handleCommitments() {
+	ack := &protocol.Acknowledgement{Acker: &r.c.our_id}
 	r.c.router.Receive(r.id, S2S_COMMITMENT, func(msg *protocol.S2SMessage) bool {
-		// TODO
-		// checkCommitmentUnique(msg.Commitment)
-		// TODO
-		// if done {
-		// go r.handleKeys()
-		// }
-		// TODO send out the ack
-		// return done
+		r.checkCommitmentUnique(*msg.Server, msg.Commitment)
+		done := r.commitmentsRemaining == 0
+		if done {
+			go r.handleKeys()
+		}
+		// send an ack
+		ack.Commiter, ack.Commitment = msg.Server, msg.Commitment
+		ack_bs, err := proto.Marshal(ack)
+		if err != nil {
+			panic(err)
+		}
+		signed_ack_bs := r.c.our_sk.Sign(ack_bs, protocol.SIGN_TAG_ACK)
+		r.c.broadcast(&protocol.S2SMessage{Round: msg.Round, Ack: signed_ack_bs})
+		return done
 	})
 	close(r.afterCommitments)
 }
@@ -131,11 +169,35 @@ func (r *round) handleCommitments() {
 // Called together with handleCommitments because as soon as a commitment
 // is sent out, acknowledgements from all servers should follow.
 func (r *round) handleAcknowledgements() {
+	hasAcked := make(map[int64]map[int64]struct{})
+	for id := range r.c.Peers {
+		hasAcked[id] = make(map[int64]struct{})
+	}
+	ack := new(protocol.Acknowledgement)
 	r.c.router.Receive(r.id, S2S_ACKNOWLEDGEMENT, func(msg *protocol.S2SMessage) bool {
-		// TODO
-		// r.checkCommitmentUnique(ack.Commitment)
-		// TODO
-		// return done
+		peer := r.c.Peers[*msg.Server]
+		ack_bs, err := peer.PK().Verify(msg.Ack, protocol.SIGN_TAG_ACK)
+		if err != nil {
+			log.Fatalf("peer.PK().Verify(msg.Ack, protocol.SIGN_TAG_ACK): %s", err)
+		}
+		if err := proto.Unmarshal(ack_bs, ack); err != nil {
+			log.Fatalf("proto.Unmarshal(ack_bs, ack): %s", err)
+		}
+		if *msg.Server != *ack.Acker {
+			log.Fatalf("Peer %d acked as %d", *msg.Server, *ack.Acker)
+		}
+		if *ack.Commiter == *ack.Acker {
+			log.Printf("Peer %d acked themselves", *msg.Server)
+			return false
+		}
+		r.checkCommitmentUnique(*msg.Server, ack.Commitment)
+		if _, already := hasAcked[*ack.Acker][*ack.Commiter]; !already {
+			hasAcked[*ack.Acker][*ack.Commiter] = struct{}{}
+			if len(hasAcked[*ack.Acker]) == len(r.c.Peers)-1 {
+				r.acknowledgersRemaining--
+			}
+		}
+		return r.acknowledgersRemaining == 0
 	})
 	close(r.afterAcknowledgements)
 }

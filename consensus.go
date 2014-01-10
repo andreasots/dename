@@ -156,6 +156,7 @@ func (c *Consensus) replayRound(round_n int64) {
 }
 
 func (c *Consensus) OnMessage(msg_bs []byte) {
+	// TODO: check whether the msg.Server is correct
 	c.incomingMessagesIn <- msg_bs
 }
 
