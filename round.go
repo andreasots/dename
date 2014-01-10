@@ -5,6 +5,7 @@ import (
 	"code.google.com/p/go.crypto/nacl/secretbox"
 	"code.google.com/p/goprotobuf/proto"
 	"crypto/rand"
+	"crypto/sha256"
 	"github.com/andres-erbsen/dename/prng"
 	"github.com/andres-erbsen/dename/protocol"
 	"log"
@@ -262,9 +263,24 @@ func (r *round) handleKeys() {
 		}(*msg.Server, keys[*msg.Server])
 		return len(keys)+1 == len(r.c.Peers) // our key is stored separately
 	})
-	// TODO: initialize shared secret
+
+	// seed the shared prng
+	h := sha256.New()
+	for id := range r.c.Peers {
+		h.Write(keys[id][:])
+	}
+	seed := new([32]byte)
+	seed_bs := h.Sum(nil)
+	copy(seed[:], seed_bs)
+	r.shared_prng = prng.NewPRNG(seed)
+
 	decryptions.Wait()
 	close(r.afterKeys)
+}
+
+func (r *round) Publish(result []byte) {
+	// TODO
+	close(r.afterWeHavePublished)
 }
 
 // handlePublishes receives publish messages and verifies them.
@@ -277,10 +293,6 @@ func (r *round) handlePublishes() {
 		// return done
 	})
 	close(r.afterPublishes)
-}
-
-func (r *round) Publish(result []byte) {
-	close(r.afterWeHavePublished)
 }
 
 // Process processes the requests a round has received. It is assumed that the

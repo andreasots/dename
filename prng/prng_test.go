@@ -44,7 +44,7 @@ func TestSalsa20PRNGTestVectors(t *testing.T) {
 	for i, test := range testVectors {
 		copy(key[:], test.key)
 		out := make([]byte, len(test.out))
-		s := newPRNG(&key)
+		s := NewPRNG(&key)
 		s.Read(out)
 		if !bytes.Equal(out, test.out) {
 			t.Errorf("#%d: bad result", i)
@@ -65,7 +65,7 @@ func TestSalsa20PRNGInt63(t *testing.T) {
 		var correct int64
 		binary.Read(bytes.NewBuffer(test.out[:8]), binary.BigEndian, &correct)
 		if correct >= 0 {
-			if newPRNG(&key).Int63() != correct {
+			if NewPRNG(&key).Int63() != correct {
 				t.Errorf("#%d: bad result", i)
 			}
 		}
@@ -76,7 +76,7 @@ func TestSalsa20PRNGMathRand(t *testing.T) {
 	var key [32]byte
 	for i, test := range testVectors {
 		copy(key[:], test.key)
-		r := rand.New(newPRNG(&key))
+		r := rand.New(NewPRNG(&key))
 		x := r.Float64()
 		if x < 0 || x >= 1 {
 			t.Errorf("#%d: bad result", i)

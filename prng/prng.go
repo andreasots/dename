@@ -20,7 +20,7 @@ type PRNG struct {
 	sync.Mutex
 }
 
-func newPRNG(key *[32]byte) *PRNG {
+func NewPRNG(key *[32]byte) *PRNG {
 	ret := new(PRNG)
 	copy(ret.key[:], key[:])
 	return ret
