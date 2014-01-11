@@ -67,7 +67,7 @@ func newRound(id int64, t time.Time, c *Consensus) (r *round) {
 	}
 
 	_, err := r.c.db.Exec(`INSERT INTO rounds(id, our_key, close_time)
-		VALUES($1,$2)`, id, r.our_round_key[:], t.Unix())
+		VALUES($1,$2,$3)`, id, r.our_round_key[:], t.Unix())
 	if isPGError(err, pgErrorUniqueViolation) {
 		if err := r.c.db.QueryRow(`SELECT our_key FROM rounds
 			WHERE id = $1`, id).Scan(r.our_round_key[:]); err != nil {
