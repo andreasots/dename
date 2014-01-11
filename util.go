@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"errors"
-	"github.com/bmizerany/pq"
 	"sort"
 	"time"
 )
@@ -12,17 +11,6 @@ const TICK_INTERVAL = 4 * time.Second
 const S2S_PORT = "6362"
 
 var errPeer = errors.New("Peer id mismatch")
-
-const pgErrorRetrySerializeable = "40001"
-const pgErrorUniqueViolation = "23505"
-
-func isPGError(err error, code string) bool {
-	if err == nil {
-		return false
-	}
-	pqErr, ok := err.(pq.PGError)
-	return ok && pqErr.Get('C') == code
-}
 
 type ByteSlices [][]byte
 

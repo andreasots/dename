@@ -1,4 +1,4 @@
-package main
+package consensus
 
 import (
 	"bytes"
@@ -6,6 +6,7 @@ import (
 	"code.google.com/p/goprotobuf/proto"
 	"crypto/rand"
 	"crypto/sha256"
+	"github.com/andres-erbsen/dename/pgutil"
 	"github.com/andres-erbsen/dename/prng"
 	"github.com/andres-erbsen/dename/protocol"
 	"github.com/andres-erbsen/sgp"
@@ -68,7 +69,7 @@ func newRound(id int64, t time.Time, c *Consensus) (r *round) {
 
 	_, err := r.c.db.Exec(`INSERT INTO rounds(id, our_key, close_time)
 		VALUES($1,$2,$3)`, id, r.our_round_key[:], t.Unix())
-	if isPGError(err, pgErrorUniqueViolation) {
+	if pgutil.IsError(err, pgutil.ErrUniqueViolation) {
 		if err := r.c.db.QueryRow(`SELECT our_key FROM rounds
 			WHERE id = $1`, id).Scan(r.our_round_key[:]); err != nil {
 			log.Fatalf("our_key FROM rounds: %s", err)
@@ -77,6 +78,61 @@ func newRound(id int64, t time.Time, c *Consensus) (r *round) {
 		log.Fatalf("Insert round id,close_time: %s", err)
 	}
 	return
+}
+
+// ColdStart starts the first round in a sequence, possibly right after newRound
+func (r *round) ColdStart() {
+	go r.acceptRequests(r.c.IncomingRequests)
+	go r.acceptPushes()
+	go r.handleCommitments()
+	go r.handleAcknowledgements()
+	r.next = newRound(r.id+1, r.openAtLeastUntil.Add(r.c.TickInterval), r.c)
+	go r.next.acceptPushes()
+	go r.Process()
+}
+
+// Process processes the requests a round has received. It is assumed that the
+// round is currently receiving requests.
+//
+// Each round goes through the following general phases:
+//
+// 	1. Accept requests from clients until the end time is reached or the
+// 	previous round is finalized, whichever happens later. All requests are
+// 	encrypted and then pushed to other servers automatically.
+//	2. Commit to the queue of requests and wait for each server's
+//	commitment to be acknowledged by every other server.
+//	3. Reveal the queue and wait for others to reveal their queues
+// 	4. Process the requests
+//	5. Sign the resulting state and receive signatures from other servers
+//
+// At most three rounds can be active at once. If we have not published the
+// signed result round i, other servers cannot have finalized it so the last
+// round they can be accpeting requests for is i+1. If we have published the
+// signed result but have not yet received the results from others, it may be
+// still the case that they have proceeded: they may be processing round i+1 and
+// accepting requests for i+2 and pushing them to us.
+func (r *round) Process() {
+	time.Sleep(r.openAtLeastUntil.Sub(time.Now()))
+	close(r.afterRequests)
+	r.commitToQueue()
+
+	<-r.afterCommitments
+	r.c.router.Close(r.id, S2S_PUSH)
+	<-r.afterAcknowledgements
+
+	go r.handlePublishes()
+	r.revealRoundKey()
+
+	<-r.afterKeys
+	result := r.c.QueueProcessor(r.requests, r.shared_prng)
+	go r.next.handleCommitments()
+	go r.next.handleAcknowledgements()
+	r.next.next = newRound(r.next.id+1, r.next.openAtLeastUntil.Add(r.c.TickInterval), r.c)
+	go r.next.next.acceptPushes()
+	r.Publish(result)
+
+	<-r.afterPublishes
+	go r.next.Process()
 }
 
 // acceptRequests accepts clients.
@@ -123,7 +179,7 @@ func (r *round) acceptPushes() {
 // commitToQueue hashes our queue, signs it and publishes the result
 func (r *round) commitToQueue() {
 	our_id := r.c.our_id
-	qh, _ := HashCommitData(r.id, our_id, r.our_round_key[:], *r.pushes[our_id])
+	qh := HashCommitData(r.id, our_id, r.our_round_key[:], *r.pushes[our_id])
 	commitment_bs, err := proto.Marshal(&protocol.Commitment{
 		Round: &r.id, Server: &our_id, Hash: qh})
 	if err != nil {
@@ -263,7 +319,7 @@ func (r *round) handleKeys() {
 		}(*msg.Server, keys[*msg.Server])
 		go func(peer_id int64, key *[32]byte) { // verify commitments
 			defer decryptions.Done()
-			qh, _ := HashCommitData(r.id, peer_id, key[:], *r.pushes[peer_id])
+			qh := HashCommitData(r.id, peer_id, key[:], *r.pushes[peer_id])
 			if !bytes.Equal(qh, *r.commited[peer_id]) {
 				log.Fatalf("%d has bad queue hash", peer_id)
 			}
@@ -345,56 +401,13 @@ func (r *round) handlePublishes() {
 	close(r.afterPublishes)
 }
 
-// Process processes the requests a round has received. It is assumed that the
-// round is currently receiving requests.
-//
-// Each round goes through the following general phases:
-//
-// 	1. Accept requests from clients until the end time is reached or the
-// 	previous round is finalized, whichever happens later. All requests are
-// 	encrypted and then pushed to other servers automatically.
-//	2. Commit to the queue of requests and wait for each server's
-//	commitment to be acknowledged by every other server.
-//	3. Reveal the queue and wait for others to reveal their queues
-// 	4. Process the requests
-//	5. Sign the resulting state and receive signatures from other servers
-//
-// At most three rounds can be active at once. If we have not published the
-// signed result round i, other servers cannot have finalized it so the last
-// round they can be accpeting requests for is i+1. If we have published the
-// signed result but have not yet received the results from others, it may be
-// still the case that they have proceeded: they may be processing round i+1 and
-// accepting requests for i+2 and pushing them to us.
-func (r *round) Process() {
-	time.Sleep(r.openAtLeastUntil.Sub(time.Now()))
-	close(r.afterRequests)
-	r.commitToQueue()
-
-	<-r.afterCommitments
-	r.c.router.Close(r.id, S2S_PUSH)
-	<-r.afterAcknowledgements
-
-	go r.handlePublishes()
-	r.revealRoundKey()
-
-	<-r.afterKeys
-	result := r.c.QueueProcessor(r.requests, r.shared_prng)
-	go r.next.handleCommitments()
-	go r.next.handleAcknowledgements()
-	r.next.next = newRound(r.next.id+1, r.next.openAtLeastUntil.Add(TICK_INTERVAL), r.c)
-	go r.next.next.acceptPushes()
-	r.Publish(result)
-
-	<-r.afterPublishes
-	go r.next.Process()
-}
-
-func (r *round) ColdStart() {
-	go r.acceptRequests(r.c.IncomingRequests)
-	go r.acceptPushes()
-	go r.handleCommitments()
-	go r.handleAcknowledgements()
-	r.next = newRound(r.id+1, r.openAtLeastUntil.Add(TICK_INTERVAL), r.c)
-	go r.next.acceptPushes()
-	go r.Process()
+func HashCommitData(round, commiter int64, key []byte, pushes [][]byte) []byte {
+	commit_data_bytes, err := proto.Marshal(&protocol.CommitData{Round: &round,
+		Server: &commiter, RoundKey: key, TransactionQueue: pushes})
+	if err != nil {
+		panic(err)
+	}
+	h := sha256.New()
+	h.Write(commit_data_bytes)
+	return h.Sum(nil)
 }

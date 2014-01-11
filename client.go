@@ -12,6 +12,7 @@ import (
 	"net"
 
 	"code.google.com/p/goprotobuf/proto"
+	"github.com/andres-erbsen/dename/pgutil"
 	"github.com/andres-erbsen/dename/protocol"
 	"github.com/andres-erbsen/sgp"
 	"github.com/daniel-ziegler/merklemap"
@@ -133,7 +134,7 @@ retry_transaction:
 
 		_, err = tx.Exec(`INSERT INTO names_we_transfer(name,round)
 				VALUES($1,$2);`, name, round)
-		if isPGError(err, pgErrorRetrySerializeable) {
+		if pgutil.IsError(err, pgutil.ErrRetrySerializeable) {
 			tx.Rollback()
 			continue retry_transaction
 		} else if err != nil {
@@ -144,7 +145,7 @@ retry_transaction:
 		rq_box = append(nonce[:], rq_box...)
 		_, err = tx.Exec("INSERT INTO transaction_queue(round,introducer,request) VALUES($1,$2,$3);",
 			round, dn.us.index, rq_box)
-		if isPGError(err, pgErrorRetrySerializeable) {
+		if pgutil.IsError(err, pgutil.ErrRetrySerializeable) {
 			tx.Rollback()
 			continue retry_transaction
 		} else if err != nil {
@@ -152,7 +153,7 @@ retry_transaction:
 			log.Fatal("Cannot insert new transaction to queue: ", err)
 		}
 		err = tx.Commit()
-		if isPGError(err, pgErrorRetrySerializeable) {
+		if pgutil.IsError(err, pgutil.ErrRetrySerializeable) {
 			tx.Rollback()
 			continue retry_transaction
 		} else if err != nil {

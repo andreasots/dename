@@ -1,4 +1,4 @@
-package main
+package consensus
 
 import (
 	"code.google.com/p/goprotobuf/proto"
@@ -29,6 +29,7 @@ type Consensus struct {
 	our_sk         *sgp.SecretKey
 	our_id         int64
 	QueueProcessor QueueProcessor
+	TickInterval   time.Duration
 
 	router *Router
 	Peers  map[int64]Peer_

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"code.google.com/p/goprotobuf/proto"
+	"github.com/andres-erbsen/dename/pgutil"
 	"github.com/andres-erbsen/dename/protocol"
 	"github.com/andres-erbsen/sgp"
 	"github.com/daniel-ziegler/merklemap"
@@ -79,7 +80,7 @@ func (dn *Dename) HandleMessage(peer *Peer, msg_bs []byte) (err error) {
 func (dn *Dename) HandlePush(peer *Peer, round int64, rq []byte) (err error) {
 	_, err = dn.db.Exec(`INSERT INTO transaction_queue(round,introducer,request)
 			VALUES($1,$2,$3);`, round, peer.index, rq)
-	if isPGError(err, pgErrorUniqueViolation) {
+	if pgutil.IsError(err, pgutil.ErrUniqueViolation) {
 		// log.Print("Ignoring duplicate transaction from ", peer.index)
 		err = nil
 	} else if err != nil {
@@ -150,7 +151,7 @@ func (dn *Dename) HandleAck(acker *Peer, signed_ack_bs []byte) (err error) {
 			commitments(round,commiter,acknowledger,signature)
 			VALUES($1,$2,$3,$4)`,
 		*commitment_msg.Round, commiter.index, acker.index, signed_ack_bs)
-	if isPGError(err, pgErrorUniqueViolation) {
+	if pgutil.IsError(err, pgutil.ErrUniqueViolation) {
 		// log.Print("Ignoring duplicate ack from ", peer.index)
 		err = nil
 		return
@@ -166,7 +167,7 @@ func (dn *Dename) HandleAck(acker *Peer, signed_ack_bs []byte) (err error) {
 func (dn *Dename) HandleRoundKey(msg *protocol.S2SMessage) (err error) {
 	_, err = dn.db.Exec(`INSERT INTO round_keys(round,server,key)
 			VALUES($1,$2,$3)`, *msg.Round, *msg.Server, msg.RoundKey)
-	if isPGError(err, pgErrorUniqueViolation) {
+	if pgutil.IsError(err, pgutil.ErrUniqueViolation) {
 		log.Print("Ignoring duplicate roundkey from ", msg.Server)
 		err = nil
 		return
@@ -185,7 +186,7 @@ func (dn *Dename) HandlePublish(peer *Peer, msg *protocol.S2SMessage) (err error
 	}
 	_, err = dn.db.Exec(`INSERT INTO round_signatures(round,server,signature)
 			VALUES($1,$2,$3)`, *mapping_root_msg.Round, peer.index, msg.Publish)
-	if isPGError(err, pgErrorUniqueViolation) {
+	if pgutil.IsError(err, pgutil.ErrUniqueViolation) {
 		log.Print("Ignoring duplicate signature from ", peer.index)
 		err = nil
 		return
