@@ -269,7 +269,7 @@ func (r *round) handleAcknowledgements() {
 			log.Printf("Peer %d acked themselves", *msg.Server)
 			return false
 		}
-		r.checkCommitmentUnique(*msg.Server, ack.Commitment)
+		r.checkCommitmentUnique(*ack.Commiter, ack.Commitment)
 		if _, already := hasAcked[*ack.Acker][*ack.Commiter]; !already {
 			hasAcked[*ack.Acker][*ack.Commiter] = struct{}{}
 			if len(hasAcked[*ack.Acker]) == len(r.c.Peers)-1 {
