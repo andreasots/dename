@@ -36,13 +36,13 @@ func msgtype(msg *protocol.S2SMessage) int {
 var errNoRoute = errors.New("Router: no route for message")
 
 type Router struct {
-	routes map[router_match]router_dst
+	routes map[router_match]*router_dst
 	sync.RWMutex
 }
 
 func newRouter() (rt *Router) {
 	rt = new(Router)
-	rt.routes = make(map[router_match]router_dst)
+	rt.routes = make(map[router_match]*router_dst)
 	return rt
 }
 
@@ -64,7 +64,7 @@ type router_handler func(msg *protocol.S2SMessage) bool
 func (rt *Router) Receive(round int64, tp int, f router_handler) {
 	closer := make(chan struct{})
 	k := router_match{round, tp}
-	dst := router_dst{closer: closer, f: f}
+	dst := &router_dst{closer: closer, f: f}
 	func() {
 		rt.Lock()
 		defer rt.Unlock()
