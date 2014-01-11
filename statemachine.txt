@@ -1,0 +1,16 @@
+must = our code has to ensure
+should = holds if everyone correct, our code must verify
+
+	state					
+shouldhandle		client rq	push	commit	ack	publish
+	open for clients	x	x	x	x	
+									> commit to our queue; redirect clients to next round
+	waiting for acks		x	x	x	x
+									> apply the changes; sign the publish message
+	waiting for sigs					x
+									> start serving the result of this round to clients
+
+
+no client rqs must be routed to a round after it is closed for clients; they should go into a subsequent round instead
+no publish messages should arrive before we commit to our queue because no correct server would continue without verifying the commitment
+no new pushes or commits should arrive after all the acks have arrived
