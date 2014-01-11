@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"github.com/andres-erbsen/dename/prng"
 	"github.com/andres-erbsen/dename/protocol"
+	"github.com/andres-erbsen/sgp"
 	"log"
 	"sync"
 	"time"
@@ -35,6 +36,7 @@ type round struct {
 
 	our_round_key *[32]byte
 	shared_prng   *prng.PRNG
+	signed_result *sgp.Signed
 
 	commitmentsRemaining, acknowledgersRemaining int
 }
@@ -284,7 +286,11 @@ func (r *round) Publish(result []byte) {
 	if err != nil {
 		panic(err)
 	}
-	signed_bs := r.c.our_sk.Sign(publish_bs, protocol.SIGN_TAG_PUBLISH)
+	r.signed_result = r.c.our_sk.SignPb(publish_bs, protocol.SIGN_TAG_PUBLISH)
+	signed_bs, err := proto.Marshal(r.signed_result)
+	if err != nil {
+		panic(err)
+	}
 	r.c.broadcast(&protocol.S2SMessage{Server: &r.c.our_id,
 		Round: &r.id, Publish: signed_bs})
 	close(r.afterWeHavePublished)
@@ -295,10 +301,42 @@ func (r *round) Publish(result []byte) {
 // the queues, handlePublishes is started right before we reveal the key used to
 // encrypt our queue.
 func (r *round) handlePublishes() {
+	signed := new(sgp.Signed)
+	hasPublished := make(map[int64]struct{})
 	r.c.router.Receive(r.id, S2S_PUBLISH, func(msg *protocol.S2SMessage) bool {
-		// TODO
-		// return done
+		err := proto.Unmarshal(msg.Publish, signed)
+		if err != nil {
+			log.Fatal("Bad publish from %d: %f", *msg.Server, err)
+		}
+		if len(signed.Sigs) != 1 {
+			log.Fatalf("len(signed.Sigs) != 1 for publish from %d", *msg.Server)
+		}
+		if len(signed.KeyIds) != 1 {
+			log.Fatalf("len(signed.KeyIds) != 1 for publish from %d", *msg.Server)
+		}
+		if !r.c.Peers[*msg.Server].PK().VerifyPb(signed, protocol.SIGN_TAG_PUBLISH) {
+			log.Fatal("Invalid signature on publish from %d: %f", *msg.Server, err)
+		}
+		if !bytes.Equal(signed.Message, r.signed_result.Message) {
+			log.Fatalf("Peer %d deviates from consensus", *msg.Server)
+		}
+		if _, already := hasPublished[*msg.Server]; !already {
+			hasPublished[*msg.Server] = struct{}{}
+			r.signed_result.Sigs = append(r.signed_result.Sigs, signed.Sigs[0])
+			r.signed_result.KeyIds = append(r.signed_result.KeyIds, signed.KeyIds[0])
+		}
+		return len(hasPublished) == len(r.c.Peers)-1
 	})
+	signed_result_bs, err := proto.Marshal(r.signed_result)
+	if err != nil {
+		panic(err)
+	}
+	rs, err := r.c.db.Exec(`UPDATE rounds SET signed_result = $1 WHERE id = $2
+			AND signed_result IS NULL`, signed_result_bs, r.id)
+	n, _ := rs.RowsAffected()
+	if err != nil || n != 1 {
+		log.Fatalf("UPDATE rounds SET signed_result (%d rows): %s", n, err)
+	}
 	close(r.afterPublishes)
 }
 
