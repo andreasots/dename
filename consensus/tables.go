@@ -26,11 +26,11 @@ func (c *Consensus) createTables() {
 		id bigserial not null primary key,
 		round bigint not null,
 		type integer not null,
-		from integer not null,
+		sender integer not null,
 		message bytea unique not null,
 		FOREIGN KEY(round) REFERENCES rounds(id),
-		FOREIGN KEY(from) REFERENCES servers(id));`)
+		FOREIGN KEY(sender) REFERENCES servers(id));`)
 	if err != nil {
-		log.Fatal("Cannot create table commitments: ", err)
+		log.Fatal("Cannot create table messages: ", err)
 	}
 }

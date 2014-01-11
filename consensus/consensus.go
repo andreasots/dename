@@ -3,6 +3,7 @@ package consensus
 import (
 	"code.google.com/p/goprotobuf/proto"
 	"database/sql"
+	"github.com/andres-erbsen/dename/pgutil"
 	"github.com/andres-erbsen/dename/prng"
 	"github.com/andres-erbsen/dename/protocol"
 	"github.com/andres-erbsen/dename/ringchannel"
@@ -55,20 +56,25 @@ func NewConsensus(db *sql.DB, our_sk *sgp.SecretKey, our_id int64,
 	c.incomingMessagesIn = make(chan *protocol.S2SMessage)
 	c.incomingMessagesNext = make(chan *protocol.S2SMessage)
 	go ringchannel.RingIQ(c.incomingMessagesIn, c.incomingMessagesNext)
+
+	c.createTables()
+	for id := range c.Peers {
+		_, err := c.db.Exec(`INSERT INTO servers(id) VALUES($1)`, id)
+		if err != nil && !pgutil.IsError(err, pgutil.ErrUniqueViolation) {
+			log.Fatalf("INSERT INTO servers(id) %d: %d", id, err)
+		}
+	}
+
 	return c
 }
 
 func (c *Consensus) broadcast(msg *protocol.S2SMessage) {
-	*msg.Server = c.our_id
+	msg.Server = &c.our_id
 	msg_bs, err := proto.Marshal(msg)
 	if err != nil {
 		log.Fatalf("Marshal our message %v: %s", msg, err)
 	}
-	_, err = c.db.Exec(`INSERT INTO messages(round,type,from,message)
-		VALUES($1,$2,$3,$4)`, *msg.Round, msgtype(msg), *msg.Server, msg_bs)
-	if err != nil {
-		log.Fatalf("Insert our message to db %v: %s", msg, err)
-	}
+	c.savemsg(msg, msg_bs)
 	for id, peer := range c.Peers {
 		if id != c.our_id {
 			go peer.Send(msg_bs)
@@ -78,21 +84,21 @@ func (c *Consensus) broadcast(msg *protocol.S2SMessage) {
 
 func (c *Consensus) RefreshPeer(id int64) {
 	last_round_they_signed := int64(-1)
-	err := c.db.QueryRow(`SELECT round FROM messages WHERE from = $1 AND
+	err := c.db.QueryRow(`SELECT round FROM messages WHERE sender = $1 AND
 		type = $2 ORDER BY round DESC LIMIT 1`, id, S2S_PUBLISH).Scan(
 		&last_round_they_signed)
 	if err != nil && err != sql.ErrNoRows {
 		log.Fatalf("last_round_they_signed: %s", err)
 	}
 	last_round_we_sent_messages_in := int64(-1)
-	err = c.db.QueryRow(`SELECT round FROM messages WHERE from = $1 ORDER BY round
+	err = c.db.QueryRow(`SELECT round FROM messages WHERE sender = $1 ORDER BY round
 		DESC LIMIT 1`, c.our_id).Scan(&last_round_we_sent_messages_in)
 	if err != nil && err != sql.ErrNoRows {
 		log.Fatalf("last_round_we_sent_messages_in: %s", err)
 	}
 
 	// they may be missing our signature from the round they signed
-	rows, err := c.db.Query(`SELECT message FROM messages WHERE from = $1
+	rows, err := c.db.Query(`SELECT message FROM messages WHERE sender = $1
 		AND ((round = $2 AND type = $4) OR ($2 < round AND round <= $3))`,
 		c.our_id, last_round_they_signed, last_round_we_sent_messages_in, S2S_PUBLISH)
 	if err != nil {
@@ -111,9 +117,6 @@ func (c *Consensus) RefreshPeer(id int64) {
 }
 
 func (c *Consensus) Run() {
-	c.createTables()
-	// TODO: ensure all peers are present in the db
-
 	for id := range c.Peers {
 		if id != c.our_id {
 			go c.RefreshPeer(id)
@@ -121,7 +124,7 @@ func (c *Consensus) Run() {
 	}
 
 	rows, err := c.db.Query(`SELECT id, close_time FROM rounds
-		WHERE signed_snapshot_hash IS NULL ORDER BY id`)
+		WHERE signed_result IS NULL ORDER BY id`)
 	if err != nil {
 		log.Fatalf("Cannot load outgoing messages: %s", err)
 	}
@@ -161,7 +164,7 @@ func (c *Consensus) Run() {
 
 func (c *Consensus) replayRound(round_n int64) {
 	rows, err := c.db.Query(`SELECT message FROM messages
-		WHERE round = $1 AND from != $2 ORDER BY id ASC`, round_n, c.our_id)
+		WHERE round = $1 AND sender != $2 ORDER BY id ASC`, round_n, c.our_id)
 	if err != nil {
 		log.Fatalf("Cannot load incoming messages for round %d: %s", round_n, err)
 	}
@@ -190,16 +193,20 @@ func (c *Consensus) OnMessage(peer_id int64, msg_bs []byte) {
 	if *msg.Server != peer_id {
 		log.Fatalf("%d tried to impersonate %d: %v", peer_id, *msg.Server, *msg)
 	}
-	_, err = c.db.Exec(`INSERT INTO messages(round,type,from,message)
-		VALUES($1,$2,$3,$4)`, *msg.Round, msgtype(msg), *msg.Server, msg_bs)
-	if err != nil {
-		log.Fatalf("Insert our message to db %v: %s", *msg, err)
-	}
+	c.savemsg(msg, msg_bs)
 	c.incomingMessagesIn <- msg
 }
 
 func (c *Consensus) handleMessages() {
 	for msg := range c.incomingMessagesNext {
 		c.router.Send(msg)
+	}
+}
+
+func (c *Consensus) savemsg(msg *protocol.S2SMessage, msg_bs []byte) {
+	_, err := c.db.Exec(`INSERT INTO messages(round,type,sender,message)
+		VALUES($1,$2,$3,$4)`, *msg.Round, msgtype(msg), *msg.Server, msg_bs)
+	if err != nil && !pgutil.IsError(err, pgutil.ErrUniqueViolation) {
+		log.Fatalf("Insert message to db %v: %s", *msg, err)
 	}
 }

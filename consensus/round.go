@@ -57,6 +57,7 @@ func newRound(id int64, t time.Time, c *Consensus) (r *round) {
 	r.pushes = make(map[int64]*[][]byte, len(r.c.Peers))
 	r.commited = make(map[int64]*[]byte, len(r.c.Peers))
 	r.commitmentsRemaining = len(r.c.Peers)
+	r.our_round_key = new([32]byte)
 
 	for id := range c.Peers {
 		r.requests[id] = new([][]byte)
@@ -70,8 +71,9 @@ func newRound(id int64, t time.Time, c *Consensus) (r *round) {
 	_, err := r.c.db.Exec(`INSERT INTO rounds(id, our_key, close_time)
 		VALUES($1,$2,$3)`, id, r.our_round_key[:], t.Unix())
 	if pgutil.IsError(err, pgutil.ErrUniqueViolation) {
+		key_bs := r.our_round_key[:]
 		if err := r.c.db.QueryRow(`SELECT our_key FROM rounds
-			WHERE id = $1`, id).Scan(r.our_round_key[:]); err != nil {
+			WHERE id = $1`, id).Scan(&key_bs); err != nil {
 			log.Fatalf("our_key FROM rounds: %s", err)
 		}
 	} else if err != nil {
@@ -209,7 +211,7 @@ func (r *round) checkCommitmentUnique(peer_id int64, signed_bs []byte) {
 		*r.commited[peer_id] = commitment.Hash
 		r.commitmentsRemaining--
 	} else if !bytes.Equal(*r.commited[peer_id], commitment.Hash) {
-		log.Fatalf("Duplicate commitments from %d: %v and %v", peer_id, *r.commited[peer_id], commitment.Hash)
+		log.Printf("Multiple different commitments from %d: %v and %v", peer_id, *r.commited[peer_id], commitment.Hash)
 	}
 }
 

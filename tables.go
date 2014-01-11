@@ -7,7 +7,7 @@ func (dn *Dename) CreateTables() {
 	// name_mapping
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS name_mapping (
 		name bytea not null primary key,
-		pubkey bytea not null;`)
+		pubkey bytea not null);`)
 	if err != nil {
 		log.Fatal("Cannot create table name_mapping: ", err)
 	}

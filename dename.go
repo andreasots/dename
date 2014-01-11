@@ -72,7 +72,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to parse gcfg data: %s", err)
 	}
-	dn := &Dename{peers: make(map[int64]*Peer)}
+	dn := &Dename{peers: make(map[int64]*Peer, len(cfg.Peer)),
+		addr2peer: make(map[string]*Peer, len(cfg.Peer))}
 	dn.db, err = sql.Open("postgres", "user="+cfg.Database.User+" password="+cfg.Database.Password+" dbname="+cfg.Database.Name+" sslmode=disable")
 	if err != nil {
 		log.Fatalf("Cannot open database: %s", err)
@@ -132,4 +133,5 @@ func main() {
 	go dn.ListenForPeers()
 	go dn.ConnectToPeers()
 	go dn.ListenForClients()
+	select {}
 }
