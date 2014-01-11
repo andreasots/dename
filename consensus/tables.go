@@ -28,7 +28,6 @@ func (c *Consensus) createTables() {
 		type integer not null,
 		sender integer not null,
 		message bytea unique not null,
-		FOREIGN KEY(round) REFERENCES rounds(id),
 		FOREIGN KEY(sender) REFERENCES servers(id));`)
 	if err != nil {
 		log.Fatal("Cannot create table messages: ", err)
