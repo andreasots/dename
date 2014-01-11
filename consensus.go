@@ -55,8 +55,10 @@ func (c *Consensus) broadcast(msg *protocol.S2SMessage) {
 	if err != nil {
 		log.Fatalf("Insert our message to db %v: %s", msg, err)
 	}
-	for _, peer := range c.Peers {
-		go peer.Send(msg_bs)
+	for id, peer := range c.Peers {
+		if id != c.our_id {
+			go peer.Send(msg_bs)
+		}
 	}
 }
 
@@ -96,7 +98,9 @@ func (c *Consensus) RefreshPeer(id int64) {
 
 func (c *Consensus) Run(genesisTime time.Time) {
 	for id := range c.Peers {
-		go c.RefreshPeer(id)
+		if id != c.our_id {
+			go c.RefreshPeer(id)
+		}
 	}
 
 	rows, err := c.db.Query(`SELECT id, close_time FROM rounds

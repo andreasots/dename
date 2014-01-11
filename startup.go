@@ -65,7 +65,6 @@ func dename(cfg *Cfg) {
 	}
 	defer dn.db.Close()
 	dn.CreateTables()
-	dn.db.SetMaxOpenConns(cfg.Database.MaxConnections)
 
 	dn.our_sk, err = sgp.LoadSecretKeyFromFile(cfg.General.SecretKeyFile)
 	if err != nil {

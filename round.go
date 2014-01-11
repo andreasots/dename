@@ -38,7 +38,7 @@ type round struct {
 	shared_prng   *prng.PRNG
 	signed_result *sgp.Signed
 
-	commitmentsRemaining, acknowledgersRemaining int
+	commitmentsRemaining int
 }
 
 func newRound(id int64, t time.Time, c *Consensus) (r *round) {
@@ -56,7 +56,6 @@ func newRound(id int64, t time.Time, c *Consensus) (r *round) {
 	r.pushes = make(map[int64]*[][]byte, len(r.c.Peers))
 	r.commited = make(map[int64]*[]byte, len(r.c.Peers))
 	r.commitmentsRemaining = len(r.c.Peers)
-	r.acknowledgersRemaining = len(r.c.Peers) - 1 // don't track our own acks
 
 	for id := range c.Peers {
 		r.requests[id] = new([][]byte)
@@ -85,6 +84,7 @@ func newRound(id int64, t time.Time, c *Consensus) (r *round) {
 // stops handling requests itself, handing the channel of incoming requests over
 // to the next round.
 func (r *round) acceptRequests(rqs <-chan []byte) {
+loop:
 	for {
 		select {
 		case rq_bs := <-rqs:
@@ -100,7 +100,7 @@ func (r *round) acceptRequests(rqs <-chan []byte) {
 			*r.requests[r.c.our_id] = append(*r.requests[r.c.our_id], rq_box)
 			r.c.broadcast(&protocol.S2SMessage{Round: &r.id, PushQueue: rq_box})
 		case <-r.afterRequests:
-			break
+			break loop
 		}
 	}
 	go r.next.acceptRequests(rqs) // TODO: tail call optimization?
@@ -153,7 +153,7 @@ func (r *round) checkCommitmentUnique(peer_id int64, signed_bs []byte) {
 		*r.commited[peer_id] = commitment.Hash
 		r.commitmentsRemaining--
 	} else if !bytes.Equal(*r.commited[peer_id], commitment.Hash) {
-		log.Fatal("Duplicate commitments from %d: %v and %v", peer_id, *r.commited[peer_id], commitment.Hash)
+		log.Fatalf("Duplicate commitments from %d: %v and %v", peer_id, *r.commited[peer_id], commitment.Hash)
 	}
 }
 
@@ -187,9 +187,12 @@ func (r *round) handleCommitments() {
 // Called together with handleCommitments because as soon as a commitment
 // is sent out, acknowledgements from all servers should follow.
 func (r *round) handleAcknowledgements() {
+	acknowledgersRemaining := len(r.c.Peers) - 1 // don't track our own acks
 	hasAcked := make(map[int64]map[int64]struct{})
 	for id := range r.c.Peers {
-		hasAcked[id] = make(map[int64]struct{})
+		if id != r.c.our_id {
+			hasAcked[id] = make(map[int64]struct{})
+		}
 	}
 	ack := new(protocol.Acknowledgement)
 	r.c.router.Receive(r.id, S2S_ACKNOWLEDGEMENT, func(msg *protocol.S2SMessage) bool {
@@ -212,10 +215,10 @@ func (r *round) handleAcknowledgements() {
 		if _, already := hasAcked[*ack.Acker][*ack.Commiter]; !already {
 			hasAcked[*ack.Acker][*ack.Commiter] = struct{}{}
 			if len(hasAcked[*ack.Acker]) == len(r.c.Peers)-1 {
-				r.acknowledgersRemaining--
+				acknowledgersRemaining--
 			}
 		}
-		return r.acknowledgersRemaining == 0
+		return acknowledgersRemaining == 0
 	})
 	close(r.afterAcknowledgements)
 }
@@ -232,14 +235,16 @@ func (r *round) revealRoundKey() {
 func (r *round) handleKeys() {
 	var decryptions sync.WaitGroup
 	keys := make(map[int64]*[32]byte, len(r.c.Peers))
+	keys[r.c.our_id] = r.our_round_key
 	r.c.router.Receive(r.id, S2S_ROUNDKEY, func(msg *protocol.S2SMessage) bool {
 		if _, already := keys[*msg.Server]; !already {
 			keys[*msg.Server] = new([32]byte)
 			copy(keys[*msg.Server][:], msg.RoundKey)
 		} else if bytes.Equal(keys[*msg.Server][:], msg.RoundKey) {
+			log.Printf("%d sent same key twice", *msg.Server)
 			return false
 		} else {
-			log.Fatalf("%d keys: %v and %v", keys[*msg.Server][:], msg.RoundKey)
+			log.Fatalf("%d keys: %v and %v", *msg.Server, keys[*msg.Server][:], msg.RoundKey)
 		}
 		decryptions.Add(2)
 		go func(peer_id int64, key *[32]byte) { // decrypt requests
@@ -260,10 +265,10 @@ func (r *round) handleKeys() {
 			defer decryptions.Done()
 			qh, _ := HashCommitData(r.id, peer_id, key[:], *r.pushes[peer_id])
 			if !bytes.Equal(qh, *r.commited[peer_id]) {
-				log.Fatal("%d has bad queue hash", peer_id)
+				log.Fatalf("%d has bad queue hash", peer_id)
 			}
 		}(*msg.Server, keys[*msg.Server])
-		return len(keys)+1 == len(r.c.Peers) // our key is stored separately
+		return len(keys) == len(r.c.Peers)
 	})
 
 	// seed the shared prng
@@ -306,7 +311,7 @@ func (r *round) handlePublishes() {
 	r.c.router.Receive(r.id, S2S_PUBLISH, func(msg *protocol.S2SMessage) bool {
 		err := proto.Unmarshal(msg.Publish, signed)
 		if err != nil {
-			log.Fatal("Bad publish from %d: %f", *msg.Server, err)
+			log.Fatalf("Bad publish from %d: %f", *msg.Server, err)
 		}
 		if len(signed.Sigs) != 1 {
 			log.Fatalf("len(signed.Sigs) != 1 for publish from %d", *msg.Server)
@@ -315,7 +320,7 @@ func (r *round) handlePublishes() {
 			log.Fatalf("len(signed.KeyIds) != 1 for publish from %d", *msg.Server)
 		}
 		if !r.c.Peers[*msg.Server].PK().VerifyPb(signed, protocol.SIGN_TAG_PUBLISH) {
-			log.Fatal("Invalid signature on publish from %d: %f", *msg.Server, err)
+			log.Fatalf("Invalid signature on publish from %d: %f", *msg.Server, err)
 		}
 		if !bytes.Equal(signed.Message, r.signed_result.Message) {
 			log.Fatalf("Peer %d deviates from consensus", *msg.Server)
