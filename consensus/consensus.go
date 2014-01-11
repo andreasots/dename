@@ -20,7 +20,7 @@ import (
 type QueueProcessor func(map[int64]*[][]byte, *prng.PRNG) []byte
 
 type Peer_ interface {
-	Send([]byte)
+	Send([]byte) error
 	PK() *sgp.Entity
 }
 
@@ -29,20 +29,33 @@ type Consensus struct {
 	our_sk         *sgp.SecretKey
 	our_id         int64
 	QueueProcessor QueueProcessor
+	genesisTime    time.Time
 	TickInterval   time.Duration
 
 	router *Router
 	Peers  map[int64]Peer_
 
-	IncomingRequests chan []byte
-
+	IncomingRequests                         chan []byte
 	incomingMessagesIn, incomingMessagesNext chan *protocol.S2SMessage
 }
 
-func (c *Consensus) Init() {
+func NewConsensus(db *sql.DB, our_sk *sgp.SecretKey, our_id int64,
+	queueProcessor QueueProcessor, genesisTime time.Time,
+	tickInterval time.Duration, peers map[int64]Peer_) *Consensus {
+	c := new(Consensus)
+	c.db = db
+	c.our_sk = our_sk
+	c.our_id = our_id
+	c.QueueProcessor = queueProcessor
+	c.TickInterval = tickInterval
+	c.genesisTime = genesisTime
+	c.router = newRouter()
+	c.Peers = peers
+
 	c.incomingMessagesIn = make(chan *protocol.S2SMessage)
 	c.incomingMessagesNext = make(chan *protocol.S2SMessage)
 	go ringchannel.RingIQ(c.incomingMessagesIn, c.incomingMessagesNext)
+	return c
 }
 
 func (c *Consensus) broadcast(msg *protocol.S2SMessage) {
@@ -97,7 +110,10 @@ func (c *Consensus) RefreshPeer(id int64) {
 	}
 }
 
-func (c *Consensus) Run(genesisTime time.Time) {
+func (c *Consensus) Run() {
+	c.createTables()
+	// TODO: ensure all peers are present in the db
+
 	for id := range c.Peers {
 		if id != c.our_id {
 			go c.RefreshPeer(id)
@@ -112,7 +128,7 @@ func (c *Consensus) Run(genesisTime time.Time) {
 	defer rows.Close()
 
 	id := int64(0)
-	t := genesisTime
+	t := c.genesisTime
 	three_rounds := false
 	if rows.Next() { // 1st
 		var id, close_time_u int64

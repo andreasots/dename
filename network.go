@@ -2,33 +2,69 @@ package main
 
 import (
 	"bytes"
-	"code.google.com/p/goprotobuf/proto"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"strings"
 	"sync"
-
-	"github.com/andres-erbsen/dename/protocol"
 )
 
 func (dn *Dename) ListenForClients() {
+	client_lnr, err := net.Listen("tcp", dn.us.addr+":6263")
+	if err != nil {
+		log.Fatal(err)
+	}
 	for {
-		conn, err := dn.client_lnr.Accept()
+		conn, err := client_lnr.Accept()
 		if err == nil {
-			go dn.HandleClient(conn)
+			_ = conn // TODO: client handling
 		}
 	}
 }
 
 func (dn *Dename) ListenForPeers() {
+	our_server_tcpaddr, err := net.ResolveTCPAddr("tcp", dn.us.addr+":"+S2S_PORT)
+	if err != nil {
+		log.Fatal(err)
+	}
+	peer_lnr, err := net.ListenTCP("tcp", our_server_tcpaddr)
+	if err != nil {
+		log.Fatal(err)
+	}
 	for {
-		conn, err := dn.peer_lnr.AcceptTCP()
+		conn, err := peer_lnr.AcceptTCP()
 		if err == nil {
 			conn.SetNoDelay(false)
 			go dn.PeerConnected(conn)
+		}
+	}
+}
+
+func (dn *Dename) ConnectToPeers() {
+	laddr_ip, err := net.ResolveIPAddr("", dn.us.addr)
+	if err != nil {
+		log.Fatal("resolve our ip: ", err)
+	}
+
+	for _, peer := range dn.peers {
+		if peer == dn.us {
+			continue
+		}
+		laddr := &net.TCPAddr{IP: laddr_ip.IP}
+
+		raddr, err := net.ResolveTCPAddr("tcp", peer.addr+":"+S2S_PORT)
+		if err != nil {
+			log.Fatal(err)
+		}
+		conn, err := net.DialTCP("tcp", laddr, raddr)
+		if err == nil {
+			conn.SetNoDelay(false)
+			dn.PeerConnected(conn)
+		} else {
+			log.Print("connect to peer: ", err, laddr, raddr)
 		}
 	}
 }
@@ -64,49 +100,34 @@ func (dn *Dename) PeerConnected(conn net.Conn) {
 	}
 	peer.closeOnce = new(sync.Once)
 	peer.conn = conn
-	go dn.BringUpToDate(peer)
-	go dn.ReceiveLoop(peer)
+	go dn.c.RefreshPeer(peer.id)
+	go peer.ReceiveLoop(dn.c.OnMessage)
 }
 
-const FRAME_SIZE = 1600
-
-func (dn *Dename) ReceiveLoop(peer *Peer) (err error) {
+func (peer *Peer) ReceiveLoop(f func(int64, []byte)) (err error) {
 	peer.RLock()
 	conn := peer.conn
 	closeOnce := peer.closeOnce
 	peer.RUnlock()
+	var sz uint16
 	for {
-		err = nil
-		sz := 2 // uint16 content_sz header
-		n := 0
-		nn := 0
-		buf := make([]byte, FRAME_SIZE)
-		for n < sz {
-			nn, err = conn.Read(buf[n:sz])
-			if err != nil {
-				break
-			}
-			// log.Print("Read ", nn, " bytes from ", peer.addr)
-			n += nn
-			if n == 2 {
-				var content_sz uint16
-				binary.Read(bytes.NewBuffer(buf[:2]), binary.LittleEndian, &content_sz)
-				sz += int(content_sz)
-				if sz > FRAME_SIZE {
-					err = errors.New("ReceiveLoop: Incoming message too big")
-					break
-				}
-			}
-		}
+		err := binary.Read(conn, binary.LittleEndian, &sz)
 		if err != nil {
-			peer.Lock()
-			closeOnce.Do(peer.CloseConn)
-			peer.Unlock()
-			return err
-		} else {
-			go dn.HandleMessage(peer, buf[2:sz])
+			break
 		}
+		buf := make([]byte, sz)
+		_, err = io.ReadFull(conn, buf)
+		if err != nil {
+			break
+		}
+		go f(peer.id, buf)
 	}
+	if err != nil {
+		peer.Lock()
+		closeOnce.Do(peer.CloseConn)
+		peer.Unlock()
+	}
+	return
 }
 
 func (peer *Peer) CloseConn() {
@@ -114,41 +135,20 @@ func (peer *Peer) CloseConn() {
 	peer.conn = nil
 }
 
-func (dn *Dename) SendToPeer(peer *Peer, msg *protocol.S2SMessage) error {
-	if msg.Server == nil {
-		msg.Server = &dn.us.index
-	}
-	sz := proto.Size(msg)
-	buf := bytes.NewBuffer(make([]byte, 0, 2+sz))
-	binary.Write(buf, binary.LittleEndian, uint16(sz))
-	msg_bs, err := proto.Marshal(msg)
-	if err != nil {
-		panic(err)
-	}
-	buf.Write(msg_bs)
-
+func (peer *Peer) Send(msg_bs []byte) error {
 	peer.RLock()
 	conn := peer.conn
 	peer.RUnlock()
 	if conn == nil {
-		return errors.New(fmt.Sprintf("SendToPeer: No connection to %v present (%v)", peer.index, dn.us.index))
+		return errors.New(fmt.Sprintf("SendToPeer: No connection to %v present", peer.id))
 	}
-	_, err = conn.Write(buf.Bytes())
+	err := binary.Write(conn, binary.LittleEndian, uint16(len(msg_bs)))
+	if err != nil {
+		return err
+	}
+	_, err = conn.Write(msg_bs)
 	if err != nil {
 		return err
 	}
 	return nil
-}
-
-func (dn *Dename) Broadcast(msg *protocol.S2SMessage) {
-	for _, peer := range dn.addr2peer {
-		if peer.index != dn.us.index {
-			go func(peer *Peer) {
-				err := dn.SendToPeer(peer, msg)
-				if err != nil {
-					log.Print(err)
-				}
-			}(peer)
-		}
-	}
 }
