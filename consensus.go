@@ -35,12 +35,12 @@ type Consensus struct {
 
 	IncomingRequests chan []byte
 
-	incomingMessagesIn, incomingMessagesNext chan []byte
+	incomingMessagesIn, incomingMessagesNext chan *protocol.S2SMessage
 }
 
 func (c *Consensus) Init() {
-	c.incomingMessagesIn = make(chan []byte)
-	c.incomingMessagesNext = make(chan []byte)
+	c.incomingMessagesIn = make(chan *protocol.S2SMessage)
+	c.incomingMessagesNext = make(chan *protocol.S2SMessage)
 	go ringchannel.RingIQ(c.incomingMessagesIn, c.incomingMessagesNext)
 }
 
@@ -149,37 +149,40 @@ func (c *Consensus) replayRound(round_n int64) {
 		log.Fatalf("Cannot load incoming messages for round %d: %s", round_n, err)
 	}
 	defer rows.Close()
+	var msg_bs []byte
+	msg := new(protocol.S2SMessage)
 	for rows.Next() {
-		var msg_bs []byte
 		err := rows.Scan(&msg_bs)
 		if err != nil {
 			log.Fatalf("msg from db: rows.Scan(&msg_bs): %s", err)
 		}
-		c.handleMessage(msg_bs)
+		err = proto.Unmarshal(msg_bs, msg)
+		if err != nil {
+			log.Fatalf("replayRound(%d): proto.Unmarshal(msg_bs, msg): %s", round_n, err)
+		}
+		c.router.Send(msg)
 	}
 }
 
-func (c *Consensus) OnMessage(msg_bs []byte) {
-	// TODO: check whether the msg.Server is correct
-	c.incomingMessagesIn <- msg_bs
-}
-
-func (c *Consensus) handleMessages() {
-	for msg_bs := range c.incomingMessagesNext {
-		c.handleMessage(msg_bs)
-	}
-}
-
-func (c *Consensus) handleMessage(msg_bs []byte) {
+func (c *Consensus) OnMessage(peer_id int64, msg_bs []byte) {
 	msg := new(protocol.S2SMessage)
 	err := proto.Unmarshal(msg_bs, msg)
 	if err != nil {
-		log.Fatalf("OnMessage: proto.Unmarshal(msg_bs, msg): %s", err)
+		log.Fatalf("OnMessage(%d,_): proto.Unmarshal(msg_bs, msg): %s", peer_id, err)
+	}
+	if *msg.Server != peer_id {
+		log.Fatalf("%d tried to impersonate %d: %v", peer_id, *msg.Server, *msg)
 	}
 	_, err = c.db.Exec(`INSERT INTO messages(round,type,from,message)
 		VALUES($1,$2,$3,$4)`, *msg.Round, msgtype(msg), *msg.Server, msg_bs)
 	if err != nil {
-		log.Fatalf("Insert our message to db %v: %s", msg, err)
+		log.Fatalf("Insert our message to db %v: %s", *msg, err)
 	}
-	c.router.Send(msg)
+	c.incomingMessagesIn <- msg
+}
+
+func (c *Consensus) handleMessages() {
+	for msg := range c.incomingMessagesNext {
+		c.router.Send(msg)
+	}
 }
