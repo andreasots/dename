@@ -60,7 +60,7 @@ func newRound(id int64, t time.Time, c *Consensus) (r *round) {
 	for id := range c.Peers {
 		r.requests[id] = new([][]byte)
 		r.pushes[id] = new([][]byte)
-		r.commited[id] = nil
+		r.commited[id] = new([]byte)
 	}
 	if _, err := rand.Read(r.our_round_key[:]); err != nil {
 		log.Fatalf("rand.Read(r.our_round_key[:]):]): %s", err)
