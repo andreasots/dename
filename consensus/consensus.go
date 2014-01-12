@@ -15,9 +15,9 @@ import (
 // requests in some way. A randomness source shared between the servers
 // is also available, but care has to be taken to read from it in a
 // deterministic way. QueueProcessor should return a short description
-// (usually a hash) of the new state.
-// QueueProcessor :: Map Server [Request] -> Rand -> State -> State
-type QueueProcessor func(map[int64]*[][]byte, *prng.PRNG) []byte
+// (usually a hash) of the new state. Last argument is round number.
+// QueueProcessor :: Map Server [Request] -> Rand -> Int64 -> State -> State
+type QueueProcessor func(map[int64]*[][]byte, *prng.PRNG, int64) []byte
 
 type Peer_ interface {
 	Send([]byte) error

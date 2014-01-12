@@ -131,7 +131,7 @@ func (r *round) Process() {
 
 	<-r.afterKeys
 	log.Printf("round %v: got keys", r.id)
-	result := r.c.QueueProcessor(r.requests, r.shared_prng)
+	result := r.c.QueueProcessor(r.requests, r.shared_prng, r.id)
 	r.next.startHandlingCommitments()
 	r.next.startHandlingAcknowledgements()
 	r.next.next = newRound(r.next.id+1, r.next.openAtLeastUntil.Add(r.c.TickInterval), r.c)
