@@ -307,6 +307,7 @@ func (r *round) startHandlingKeys() {
 	var decryptions sync.WaitGroup
 	keys := make(map[int64]*[32]byte, len(r.c.Peers))
 	keys[r.c.our_id] = r.our_round_key
+	decryptions.Add(2*len(r.c.Peers) - 2)
 	r.c.router.Receive(r.id, ROUNDKEY, func(msg *ConsensusMSG) bool {
 		if _, already := keys[*msg.Server]; !already {
 			keys[*msg.Server] = new([32]byte)
@@ -317,7 +318,6 @@ func (r *round) startHandlingKeys() {
 		} else {
 			log.Fatalf("%d keys: %v and %v", *msg.Server, keys[*msg.Server][:], msg.RoundKey)
 		}
-		decryptions.Add(2)
 		go func(peer_id int64, key *[32]byte) { // decrypt requests
 			defer decryptions.Done()
 			rqs := make([][]byte, len(*r.pushes[peer_id]))
