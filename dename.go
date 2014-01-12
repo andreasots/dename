@@ -14,6 +14,8 @@ import (
 	"net"
 	"sync"
 	"time"
+	"os"
+	"os/signal"
 )
 
 type Peer struct {
@@ -67,6 +69,12 @@ type Cfg struct {
 }
 
 func main() {
+	go func() {
+		ch := make(chan os.Signal)
+		signal.Notify(ch, os.Interrupt)
+		<-ch
+		panic("Interrupted!")
+	}()
 	cfg := new(Cfg)
 	err := gcfg.ReadFileInto(cfg, "dename.cfg")
 	if err != nil {
@@ -124,7 +132,10 @@ func main() {
 	}
 	dn.c = consensus.NewConsensus(dn.db, &dn.our_sk, dn.us.id,
 		func(rqs map[int64]*[][]byte, _ *prng.PRNG) []byte {
-			fmt.Print(rqs)
+			log.Printf("Requests this round:")
+			for k, v := range rqs {
+				log.Printf(" %v;%v", k, *v)
+			}
 			return []byte("HASH1234HASH5678HASH8765HASH4321")
 		},
 		time.Now(), 4*time.Second, peers)
