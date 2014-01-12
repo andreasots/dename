@@ -23,3 +23,14 @@ _testmain.go
 *.test
 
 tags
+inst
+1
+2
+3
+4
+5
+out
+
+dename
+dnmlookup/dnmlookup
+dnmreg/dnmreg
