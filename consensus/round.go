@@ -18,12 +18,13 @@ import (
 // round is a sequence of communication and computation steps that results in
 // zero or requests being handled, possibly mutating some shared state.
 type round struct {
-	c *Consensus
+	c *Consensus // const pointer, target not mutated from round
 
-	id               int64
-	openAtLeastUntil time.Time
-	next             *round
+	id               int64     // const
+	openAtLeastUntil time.Time // const
+	next             *round    // pointer set by the .previous after keys
 
+	// const
 	afterRequests         chan struct{}
 	afterCommitments      chan struct{}
 	afterAcknowledgements chan struct{}
@@ -31,12 +32,13 @@ type round struct {
 	afterWeHavePublished  chan struct{}
 	afterPublishes        chan struct{}
 
-	requests map[int64]*[][]byte
-	pushes   map[int64]*[][]byte
-	commited map[int64]*[]byte
+	// the maps are const, pointer targets are mutable
+	requests map[int64]*[][]byte // populated by key handler decryptor (us: rq handler)
+	pushes   map[int64]*[][]byte // populated by push handler (us: rq handler)
+	commited map[int64]*[]byte   // set by commitment handler
 
-	our_round_key *[32]byte
-	shared_prng   *prng.PRNG
+	our_round_key *[32]byte  // const
+	shared_prng   *prng.PRNG // pointer set at the end of key handler after
 	signed_result *sgp.Signed
 
 	commitmentsRemaining int
@@ -64,6 +66,9 @@ func newRound(id int64, t time.Time, c *Consensus) (r *round) {
 		r.pushes[id] = new([][]byte)
 		r.commited[id] = new([]byte)
 	}
+	*r.pushes[r.c.our_id] = make([][]byte, 0)
+	*r.requests[r.c.our_id] = make([][]byte, 0)
+
 	if _, err := rand.Read(r.our_round_key[:]); err != nil {
 		log.Fatalf("rand.Read(r.our_round_key[:]):]): %s", err)
 	}
@@ -152,16 +157,13 @@ loop:
 	for {
 		select {
 		case rq_bs := <-rqs:
-			// 24:nonce || ...:encrypted message || secretbox.Overhead:auth
-			rq_box := make([]byte, 24, 24+len(rq_bs)+secretbox.Overhead)
-			if _, err := rand.Read(rq_box[:24]); err != nil {
-				log.Fatalf("rand.Read(rq_box[:24]): %f", err)
-			}
+			*r.requests[r.c.our_id] = append(*r.requests[r.c.our_id], rq_bs)
 			nonce := new([24]byte)
-			copy(nonce[:], rq_box[:24])
-			secretbox.Seal(rq_box[24:], rq_bs, nonce, r.our_round_key)
+			if _, err := rand.Read(nonce[:]); err != nil {
+				log.Fatalf("rand.Read(rq_box): %s", err)
+			}
+			rq_box := secretbox.Seal(nonce[:], rq_bs, nonce, r.our_round_key)
 			*r.pushes[r.c.our_id] = append(*r.pushes[r.c.our_id], rq_box)
-			*r.requests[r.c.our_id] = append(*r.requests[r.c.our_id], rq_box)
 			r.c.broadcast(&ConsensusMSG{Round: &r.id, PushQueue: rq_box})
 		case <-r.afterRequests:
 			break loop
@@ -327,7 +329,7 @@ func (r *round) startHandlingKeys() {
 				copy(nonce[:], rq_box[:24])
 				rqs[i], ok = secretbox.Open(nil, rq_box[24:], nonce, key)
 				if !ok {
-					log.Fatalf("Failed to decrypt %d's queue", peer_id)
+					log.Fatalf("Failed to decrypt %d's queue %x key %x", peer_id, rq_box, *key)
 				}
 			}
 			*r.requests[peer_id] = rqs
