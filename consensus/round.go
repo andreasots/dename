@@ -72,11 +72,12 @@ func newRound(id int64, t time.Time, c *Consensus) (r *round) {
 	_, err := r.c.db.Exec(`INSERT INTO rounds(id, our_key, close_time)
 		VALUES($1,$2,$3)`, id, r.our_round_key[:], t.Unix())
 	if pgutil.IsError(err, pgutil.ErrUniqueViolation) {
-		key_bs := r.our_round_key[:]
+		var key_bs []byte
 		if err := r.c.db.QueryRow(`SELECT our_key FROM rounds
 			WHERE id = $1`, id).Scan(&key_bs); err != nil {
 			log.Fatalf("our_key FROM rounds: %s", err)
 		}
+		copy(r.our_round_key[:], key_bs)
 	} else if err != nil {
 		log.Fatalf("Insert round id,close_time: %s", err)
 	}
@@ -86,11 +87,11 @@ func newRound(id int64, t time.Time, c *Consensus) (r *round) {
 // ColdStart starts the first round in a sequence, possibly right after newRound
 func (r *round) ColdStart() {
 	go r.acceptRequests(r.c.IncomingRequests)
-	go r.acceptPushes()
-	go r.handleCommitments()
-	go r.handleAcknowledgements()
+	r.startAcceptingPushes()
+	r.startHandlingCommitments()
+	r.startHandlingAcknowledgements()
 	r.next = newRound(r.id+1, r.openAtLeastUntil.Add(r.c.TickInterval), r.c)
-	go r.next.acceptPushes()
+	r.next.startAcceptingPushes()
 	go r.Process()
 }
 
@@ -115,27 +116,31 @@ func (r *round) ColdStart() {
 // still the case that they have proceeded: they may be processing round i+1 and
 // accepting requests for i+2 and pushing them to us.
 func (r *round) Process() {
-	log.Printf("processing round %v", r.id)
 	time.Sleep(r.openAtLeastUntil.Sub(time.Now()))
+	log.Printf("processing round %v", r.id)
 	close(r.afterRequests)
 	r.commitToQueue()
 
 	<-r.afterCommitments
+	log.Printf("round %v: got commitments", r.id)
 	r.c.router.Close(r.id, S2S_PUSH)
 	<-r.afterAcknowledgements
+	log.Printf("round %v: got acks", r.id)
 
-	go r.handlePublishes()
+	r.startHandlingPublishes()
 	r.revealRoundKey()
 
 	<-r.afterKeys
+	log.Printf("round %v: got keys", r.id)
 	result := r.c.QueueProcessor(r.requests, r.shared_prng)
-	go r.next.handleCommitments()
-	go r.next.handleAcknowledgements()
+	r.next.startHandlingCommitments()
+	r.next.startHandlingAcknowledgements()
 	r.next.next = newRound(r.next.id+1, r.next.openAtLeastUntil.Add(r.c.TickInterval), r.c)
-	go r.next.next.acceptPushes()
+	r.next.next.startAcceptingPushes()
 	r.Publish(result)
 
 	<-r.afterPublishes
+	log.Printf("round %v: got publishes", r.id)
 	go r.next.Process()
 }
 
@@ -166,14 +171,14 @@ loop:
 	go r.next.acceptRequests(rqs) // TODO: tail call optimization?
 }
 
-// acceptPushes handles pushes from servers.
+// startAcceptingPushes handles pushes from servers.
 // A round should be accept pushes as long as any other server may be
 // accept requests for that round.
 // When round i publishes the last message other servers would need from us to
 // finalize that round, other servers may start processing the next round and
-// accept requests to the round after that. Therefore, acceptPushes
-// is started on round i+2.
-func (r *round) acceptPushes() {
+// accept requests to the round after that. Therefore, startAcceptingPushes
+// is called on round i+2.
+func (r *round) startAcceptingPushes() {
 	r.c.router.Receive(r.id, S2S_PUSH, func(msg *protocol.S2SMessage) bool {
 		*r.pushes[*msg.Server] = append(*r.pushes[*msg.Server], msg.PushQueue)
 		return false
@@ -219,18 +224,18 @@ func (r *round) checkCommitmentUnique(peer_id int64, signed_bs []byte) {
 	}
 }
 
-// handleCommitments acknowledges commitments
+// startHandlingCommitments acknowledges commitments
 // received from other servers. As a server may start processing a round as soon
-// as it finalizes the previous one, a round starts handleCommitments on
+// as it finalizes the previous one, a round calls startHandlingCommitments on
 // the next one right before sending out the last message other servers have to
 // wait for.
-func (r *round) handleCommitments() {
+func (r *round) startHandlingCommitments() {
 	ack := &protocol.Acknowledgement{Acker: &r.c.our_id}
 	r.c.router.Receive(r.id, S2S_COMMITMENT, func(msg *protocol.S2SMessage) bool {
 		r.checkCommitmentUnique(*msg.Server, msg.Commitment)
 		done := r.commitmentsRemaining == 0
 		if done {
-			go r.handleKeys()
+			r.startHandlingKeys()
 		}
 		// send an ack
 		ack.Commiter, ack.Commitment = msg.Server, msg.Commitment
@@ -240,15 +245,17 @@ func (r *round) handleCommitments() {
 		}
 		signed_ack_bs := r.c.our_sk.Sign(ack_bs, protocol.SIGN_TAG_ACK)
 		r.c.broadcast(&protocol.S2SMessage{Round: msg.Round, Ack: signed_ack_bs})
+		if done {
+			close(r.afterCommitments)
+		}
 		return done
 	})
-	close(r.afterCommitments)
 }
 
-// handleAcknowledgements receives acknowledgements.
-// Called together with handleCommitments because as soon as a commitment
+// startHandlingAcknowledgements receives acknowledgements.
+// Called together with startHandlingCommitments because as soon as a commitment
 // is sent out, acknowledgements from all servers should follow.
-func (r *round) handleAcknowledgements() {
+func (r *round) startHandlingAcknowledgements() {
 	acknowledgersRemaining := len(r.c.Peers) - 1 // don't track our own acks
 	hasAcked := make(map[int64]map[int64]struct{})
 	for id := range r.c.Peers {
@@ -280,21 +287,24 @@ func (r *round) handleAcknowledgements() {
 				acknowledgersRemaining--
 			}
 		}
-		return acknowledgersRemaining == 0
+		done := acknowledgersRemaining == 0
+		if done {
+			close(r.afterAcknowledgements)
+		}
+		return done
 	})
-	close(r.afterAcknowledgements)
 }
 
 func (r *round) revealRoundKey() {
 	r.c.broadcast(&protocol.S2SMessage{Round: &r.id, RoundKey: r.our_round_key[:]})
 }
 
-// handleKeys receives
+// startHandlingKeys receives
 // keys and spawns workers to decrypt the queues.
 // As a server should not reveal their round key before they have seen all the
-// acknowledgements, handleKeys is started before we acknowledge the last
+// acknowledgements, startHandlingKeys is called before we acknowledge the last
 // commitment of that round.
-func (r *round) handleKeys() {
+func (r *round) startHandlingKeys() {
 	var decryptions sync.WaitGroup
 	keys := make(map[int64]*[32]byte, len(r.c.Peers))
 	keys[r.c.our_id] = r.our_round_key
@@ -327,24 +337,27 @@ func (r *round) handleKeys() {
 			defer decryptions.Done()
 			qh := HashCommitData(r.id, peer_id, key[:], *r.pushes[peer_id])
 			if !bytes.Equal(qh, *r.commited[peer_id]) {
-				log.Fatalf("%d has bad queue hash", peer_id)
+				log.Fatalf("%d has bad queue hash: %v, %x, %x", peer_id, *r.pushes[peer_id], qh, *r.commited[peer_id])
 			}
 		}(*msg.Server, keys[*msg.Server])
-		return len(keys) == len(r.c.Peers)
+		done := len(keys) == len(r.c.Peers)
+		if done {
+			// seed the shared prng
+			h := sha256.New()
+			for id := range r.c.Peers {
+				h.Write(keys[id][:])
+			}
+			seed := new([32]byte)
+			seed_bs := h.Sum(nil)
+			copy(seed[:], seed_bs)
+			r.shared_prng = prng.NewPRNG(seed)
+		}
+		return done
 	})
-
-	// seed the shared prng
-	h := sha256.New()
-	for id := range r.c.Peers {
-		h.Write(keys[id][:])
-	}
-	seed := new([32]byte)
-	seed_bs := h.Sum(nil)
-	copy(seed[:], seed_bs)
-	r.shared_prng = prng.NewPRNG(seed)
-
-	decryptions.Wait()
-	close(r.afterKeys)
+	go func(){
+		decryptions.Wait()
+		close(r.afterKeys)
+	}()
 }
 
 func (r *round) Publish(result []byte) {
@@ -363,17 +376,17 @@ func (r *round) Publish(result []byte) {
 	close(r.afterWeHavePublished)
 }
 
-// handlePublishes receives publish messages and verifies them.
+// startHandlingPublishes receives publish messages and verifies them.
 // As a server should not publish the result of a round before decrypting all
-// the queues, handlePublishes is started right before we reveal the key used to
+// the queues, startHandlingPublishes is called right before we reveal the key used to
 // encrypt our queue.
-func (r *round) handlePublishes() {
+func (r *round) startHandlingPublishes() {
 	// actually chan *sgp.Signed
 	publishesIn := make(chan interface{})
 	publishesNext := make(chan interface{})
 	go ringchannel.RingIQ(publishesIn, publishesNext)
 	hasPublished := make(map[int64]struct{})
-	go r.c.router.Receive(r.id, S2S_PUBLISH, func(msg *protocol.S2SMessage) bool {
+	r.c.router.Receive(r.id, S2S_PUBLISH, func(msg *protocol.S2SMessage) bool {
 		signed := new(sgp.Signed)
 		err := proto.Unmarshal(msg.Publish, signed)
 		if err != nil {
@@ -399,27 +412,29 @@ func (r *round) handlePublishes() {
 		}
 		return done
 	})
-	<-r.afterWeHavePublished
-	// Finish verifying & aggregating publishes
-	for item := range publishesNext {
-		signed := item.(*sgp.Signed)
-		if !bytes.Equal(signed.Message, r.signed_result.Message) {
-			log.Fatalf("Peer deviates from consensus")
+	go func(){
+		<-r.afterWeHavePublished
+		// Finish verifying & aggregating publishes
+		for item := range publishesNext {
+			signed := item.(*sgp.Signed)
+			if !bytes.Equal(signed.Message, r.signed_result.Message) {
+				log.Fatalf("Peer deviates from consensus")
+			}
+			r.signed_result.Sigs = append(r.signed_result.Sigs, signed.Sigs[0])
+			r.signed_result.KeyIds = append(r.signed_result.KeyIds, signed.KeyIds[0])
 		}
-		r.signed_result.Sigs = append(r.signed_result.Sigs, signed.Sigs[0])
-		r.signed_result.KeyIds = append(r.signed_result.KeyIds, signed.KeyIds[0])
-	}
-	signed_result_bs, err := proto.Marshal(r.signed_result)
-	if err != nil {
-		panic(err)
-	}
-	rs, err := r.c.db.Exec(`UPDATE rounds SET signed_result = $1 WHERE id = $2
-			AND signed_result IS NULL`, signed_result_bs, r.id)
-	n, _ := rs.RowsAffected()
-	if err != nil || n != 1 {
-		log.Fatalf("UPDATE rounds SET signed_result (%d rows): %s", n, err)
-	}
-	close(r.afterPublishes)
+		signed_result_bs, err := proto.Marshal(r.signed_result)
+		if err != nil {
+			panic(err)
+		}
+		rs, err := r.c.db.Exec(`UPDATE rounds SET signed_result = $1 WHERE id = $2
+				AND signed_result IS NULL`, signed_result_bs, r.id)
+		n, _ := rs.RowsAffected()
+		if err != nil || n > 1 {
+			log.Fatalf("UPDATE rounds SET signed_result (%d rows): %s", n, err)
+		}
+		close(r.afterPublishes)
+	}()
 }
 
 func HashCommitData(round, commiter int64, key []byte, pushes [][]byte) []byte {

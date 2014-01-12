@@ -41,6 +41,11 @@ type Consensus struct {
 	incomingMessagesIn, incomingMessagesNext chan interface{}
 }
 
+type serialized_msg struct {
+	bytes []byte
+	msg   *protocol.S2SMessage
+}
+
 func NewConsensus(db *sql.DB, our_sk *sgp.SecretKey, our_id int64,
 	queueProcessor QueueProcessor, genesisTime time.Time,
 	tickInterval time.Duration, peers map[int64]Peer_) *Consensus {
@@ -83,25 +88,19 @@ func (c *Consensus) broadcast(msg *protocol.S2SMessage) {
 	}
 }
 
-func (c *Consensus) RefreshPeer(id int64) {
+func (c *Consensus) RefreshPeer(id int64) (err error) {
 	last_round_they_signed := int64(-1)
-	err := c.db.QueryRow(`SELECT round FROM messages WHERE sender = $1 AND
+	err = c.db.QueryRow(`SELECT round FROM messages WHERE sender = $1 AND
 		type = $2 ORDER BY round DESC LIMIT 1`, id, S2S_PUBLISH).Scan(
 		&last_round_they_signed)
 	if err != nil && err != sql.ErrNoRows {
 		log.Fatalf("last_round_they_signed: %s", err)
 	}
-	last_round_we_sent_messages_in := int64(-1)
-	err = c.db.QueryRow(`SELECT round FROM messages WHERE sender = $1 ORDER BY round
-		DESC LIMIT 1`, c.our_id).Scan(&last_round_we_sent_messages_in)
-	if err != nil && err != sql.ErrNoRows {
-		log.Fatalf("last_round_we_sent_messages_in: %s", err)
-	}
 
 	// they may be missing our signature from the round they signed
 	rows, err := c.db.Query(`SELECT message FROM messages WHERE sender = $1
-		AND ((round = $2 AND type = $4) OR ($2 < round AND round <= $3))`,
-		c.our_id, last_round_they_signed, last_round_we_sent_messages_in, S2S_PUBLISH)
+		AND ((round = $2 AND type = $3) OR $2 < round) ORDER BY id`,
+		c.our_id, last_round_they_signed, S2S_PUBLISH)
 	if err != nil {
 		log.Fatalf("Cannot load outgoing messages: %s", err)
 	}
@@ -109,18 +108,20 @@ func (c *Consensus) RefreshPeer(id int64) {
 
 	for rows.Next() {
 		var msg_bs []byte
-		err := rows.Scan(&msg_bs)
-		if err != nil {
+		if err := rows.Scan(&msg_bs); err != nil {
 			log.Fatalf("our msg from db: rows.Scan(&msg_bs): %s", err)
 		}
-		c.Peers[id].Send(msg_bs)
+		if err := c.Peers[id].Send(msg_bs); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func (c *Consensus) Run() {
 	for id := range c.Peers {
 		if id != c.our_id {
-			go c.RefreshPeer(id)
+			go c.RefreshPeer(id) // Ignore network errors
 		}
 	}
 
@@ -135,7 +136,7 @@ func (c *Consensus) Run() {
 	t := c.genesisTime
 	three_rounds := false
 	if rows.Next() { // 1st
-		var id, close_time_u int64
+		var close_time_u int64
 		if err := rows.Scan(&id, &close_time_u); err != nil {
 			log.Fatalf("rows.Scan(&id, &close_time_u) 1: %s", err)
 		}
@@ -181,7 +182,7 @@ func (c *Consensus) replayRound(round_n int64) {
 		if err != nil {
 			log.Fatalf("replayRound(%d): proto.Unmarshal(msg_bs, msg): %s", round_n, err)
 		}
-		c.router.Send(msg)
+		c.router.SendWait(msg)
 	}
 }
 
@@ -194,13 +195,18 @@ func (c *Consensus) OnMessage(peer_id int64, msg_bs []byte) {
 	if *msg.Server != peer_id {
 		log.Fatalf("%d tried to impersonate %d: %v", peer_id, *msg.Server, *msg)
 	}
-	c.savemsg(msg, msg_bs)
-	c.incomingMessagesIn <- msg
+
+	c.incomingMessagesIn <- serialized_msg{msg_bs, msg}
 }
 
 func (c *Consensus) handleMessages() {
-	for msg := range c.incomingMessagesNext {
-		c.router.Send(msg.(*protocol.S2SMessage))
+	for item := range c.incomingMessagesNext {
+		msg := item.(serialized_msg).msg
+		c.savemsg(msg, item.(serialized_msg).bytes)
+		err := c.router.Send(msg)
+		if err != nil {
+			log.Printf("handleMessages(): router.Send() round %d type %d: %s", *msg.Round, msgtype(msg), err)
+		}
 	}
 }
 
