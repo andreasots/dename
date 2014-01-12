@@ -56,7 +56,7 @@ func newRound(id int64, t time.Time, c *Consensus) (r *round) {
 	r.requests = make(map[int64]*[][]byte, len(r.c.Peers))
 	r.pushes = make(map[int64]*[][]byte, len(r.c.Peers))
 	r.commited = make(map[int64]*[]byte, len(r.c.Peers))
-	r.commitmentsRemaining = len(r.c.Peers)
+	r.commitmentsRemaining = len(r.c.Peers) - 1
 	r.our_round_key = new([32]byte)
 
 	for id := range c.Peers {
