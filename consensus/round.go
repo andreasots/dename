@@ -13,6 +13,7 @@ import (
 	"log"
 	"sync"
 	"time"
+	"github.com/andres-erbsen/dename/ringchannel"
 )
 
 // round is a sequence of communication and computation steps that results in
@@ -114,6 +115,7 @@ func (r *round) ColdStart() {
 // still the case that they have proceeded: they may be processing round i+1 and
 // accepting requests for i+2 and pushing them to us.
 func (r *round) Process() {
+	log.Printf("processing round %v", r.id)
 	time.Sleep(r.openAtLeastUntil.Sub(time.Now()))
 	close(r.afterRequests)
 	r.commitToQueue()
@@ -207,11 +209,13 @@ func (r *round) checkCommitmentUnique(peer_id int64, signed_bs []byte) {
 	if *commitment.Round != r.id || *commitment.Server != peer_id {
 		log.Fatalf("Inconsistently labelled commitment")
 	}
-	if *r.commited[peer_id] == nil {
-		*r.commited[peer_id] = commitment.Hash
-		r.commitmentsRemaining--
-	} else if !bytes.Equal(*r.commited[peer_id], commitment.Hash) {
-		log.Printf("Multiple different commitments from %d: %v and %v", peer_id, *r.commited[peer_id], commitment.Hash)
+	if peer_id != r.c.our_id {
+		if *r.commited[peer_id] == nil {
+			*r.commited[peer_id] = commitment.Hash
+			r.commitmentsRemaining--
+		} else if !bytes.Equal(*r.commited[peer_id], commitment.Hash) {
+			log.Fatalf("Multiple different commitments from %d: %v and %v", peer_id, *r.commited[peer_id], commitment.Hash)
+		}
 	}
 }
 
@@ -364,9 +368,13 @@ func (r *round) Publish(result []byte) {
 // the queues, handlePublishes is started right before we reveal the key used to
 // encrypt our queue.
 func (r *round) handlePublishes() {
-	signed := new(sgp.Signed)
+	// actually chan *sgp.Signed
+	publishesIn := make(chan interface{})
+	publishesNext := make(chan interface{})
+	go ringchannel.RingIQ(publishesIn, publishesNext)
 	hasPublished := make(map[int64]struct{})
-	r.c.router.Receive(r.id, S2S_PUBLISH, func(msg *protocol.S2SMessage) bool {
+	go r.c.router.Receive(r.id, S2S_PUBLISH, func(msg *protocol.S2SMessage) bool {
+		signed := new(sgp.Signed)
 		err := proto.Unmarshal(msg.Publish, signed)
 		if err != nil {
 			log.Fatalf("Bad publish from %d: %f", *msg.Server, err)
@@ -380,16 +388,27 @@ func (r *round) handlePublishes() {
 		if !r.c.Peers[*msg.Server].PK().VerifyPb(signed, protocol.SIGN_TAG_PUBLISH) {
 			log.Fatalf("Invalid signature on publish from %d: %f", *msg.Server, err)
 		}
-		if !bytes.Equal(signed.Message, r.signed_result.Message) {
-			log.Fatalf("Peer %d deviates from consensus", *msg.Server)
-		}
 		if _, already := hasPublished[*msg.Server]; !already {
 			hasPublished[*msg.Server] = struct{}{}
-			r.signed_result.Sigs = append(r.signed_result.Sigs, signed.Sigs[0])
-			r.signed_result.KeyIds = append(r.signed_result.KeyIds, signed.KeyIds[0])
+			// Continue verification once we've published
+			publishesIn <- signed
 		}
-		return len(hasPublished) == len(r.c.Peers)-1
+		done := len(hasPublished) == len(r.c.Peers)-1
+		if done {
+			close(publishesIn)
+		}
+		return done
 	})
+	<-r.afterWeHavePublished
+	// Finish verifying & aggregating publishes
+	for item := range publishesNext {
+		signed := item.(*sgp.Signed)
+		if !bytes.Equal(signed.Message, r.signed_result.Message) {
+			log.Fatalf("Peer deviates from consensus")
+		}
+		r.signed_result.Sigs = append(r.signed_result.Sigs, signed.Sigs[0])
+		r.signed_result.KeyIds = append(r.signed_result.KeyIds, signed.KeyIds[0])
+	}
 	signed_result_bs, err := proto.Marshal(r.signed_result)
 	if err != nil {
 		panic(err)
