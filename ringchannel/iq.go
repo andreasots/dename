@@ -1,7 +1,5 @@
 package ringchannel
 
-import "github.com/andres-erbsen/dename/protocol"
-
 // Copyright 2010 Kyle Lemons
 // Copyright 2011 Google, Inc. (for changes on or after Feb. 22, 2011)
 //
@@ -22,18 +20,18 @@ import "github.com/andres-erbsen/dename/protocol"
 
 type Ring struct {
 	cnt, i int
-	data   []*protocol.S2SMessage
+	data   []interface{}
 }
 
 func (rb *Ring) Empty() bool {
 	return rb.cnt == 0
 }
 
-func (rb *Ring) Peek() *protocol.S2SMessage {
+func (rb *Ring) Peek() interface{} {
 	return rb.data[rb.i]
 }
 
-func (rb *Ring) Enqueue(x *protocol.S2SMessage) {
+func (rb *Ring) Enqueue(x interface{}) {
 	if rb.cnt >= len(rb.data) {
 		rb.grow(2*rb.cnt + 1)
 	}
@@ -46,7 +44,7 @@ func (rb *Ring) Dequeue() {
 }
 
 func (rb *Ring) grow(newSize int) {
-	newData := make([]*protocol.S2SMessage, newSize)
+	newData := make([]interface{}, newSize)
 
 	n := copy(newData, rb.data[rb.i:])
 	copy(newData[n:], rb.data[:rb.cnt-n])
@@ -55,7 +53,7 @@ func (rb *Ring) grow(newSize int) {
 	rb.data = newData
 }
 
-func RingIQ(in <-chan *protocol.S2SMessage, next chan<- *protocol.S2SMessage) {
+func RingIQ(in <-chan interface{}, next chan<- interface{}) {
 	var rb Ring
 	defer func() {
 		for !rb.Empty() {

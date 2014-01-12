@@ -37,7 +37,8 @@ type Consensus struct {
 	Peers  map[int64]Peer_
 
 	IncomingRequests                         chan []byte
-	incomingMessagesIn, incomingMessagesNext chan *protocol.S2SMessage
+	// Actually channels of *protocol.S2SMessage
+	incomingMessagesIn, incomingMessagesNext chan interface{}
 }
 
 func NewConsensus(db *sql.DB, our_sk *sgp.SecretKey, our_id int64,
@@ -53,8 +54,8 @@ func NewConsensus(db *sql.DB, our_sk *sgp.SecretKey, our_id int64,
 	c.router = newRouter()
 	c.Peers = peers
 
-	c.incomingMessagesIn = make(chan *protocol.S2SMessage)
-	c.incomingMessagesNext = make(chan *protocol.S2SMessage)
+	c.incomingMessagesIn = make(chan interface{})
+	c.incomingMessagesNext = make(chan interface{})
 	go ringchannel.RingIQ(c.incomingMessagesIn, c.incomingMessagesNext)
 
 	c.createTables()
@@ -199,7 +200,7 @@ func (c *Consensus) OnMessage(peer_id int64, msg_bs []byte) {
 
 func (c *Consensus) handleMessages() {
 	for msg := range c.incomingMessagesNext {
-		c.router.Send(msg)
+		c.router.Send(msg.(*protocol.S2SMessage))
 	}
 }
 
