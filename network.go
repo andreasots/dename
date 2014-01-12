@@ -82,7 +82,6 @@ func (dn *Dename) PeerConnected(conn net.Conn) {
 	defer peer.Unlock()
 	// determine whether to use this connection or keep the current
 	new_is_better := true
-	log.Print("peer: ", peer.addr, " old conn: ", peer.conn, " new: ", conn)
 	if peer.conn != nil {
 		// keep the connection where the client has the lower pk
 		if rport == S2S_PORT {
@@ -93,13 +92,13 @@ func (dn *Dename) PeerConnected(conn net.Conn) {
 	}
 	if !new_is_better {
 		conn.Close()
-		return
+	} else {
+		if peer.conn != nil {
+			peer.closeOnce.Do(peer.CloseConn)
+		}
+		peer.closeOnce = new(sync.Once)
+		peer.conn = conn
 	}
-	if peer.conn != nil {
-		peer.closeOnce.Do(peer.CloseConn)
-	}
-	peer.closeOnce = new(sync.Once)
-	peer.conn = conn
 	go dn.c.RefreshPeer(peer.id)
 	go peer.ReceiveLoop(dn.c.OnMessage)
 }
@@ -111,7 +110,7 @@ func (peer *Peer) ReceiveLoop(f func(int64, []byte)) (err error) {
 	peer.RUnlock()
 	var sz uint16
 	for {
-		err := binary.Read(conn, binary.LittleEndian, &sz)
+		err = binary.Read(conn, binary.LittleEndian, &sz)
 		if err != nil {
 			break
 		}
