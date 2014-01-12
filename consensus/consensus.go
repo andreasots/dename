@@ -60,6 +60,7 @@ func NewConsensus(db *sql.DB, our_sk *sgp.SecretKey, our_id int64,
 	c.router = newRouter()
 	c.Peers = peers
 	c.sign_tags = sign_tags
+	c.IncomingRequests = make(chan []byte)
 
 	c.incomingMessagesIn = make(chan interface{})
 	c.incomingMessagesNext = make(chan interface{})

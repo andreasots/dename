@@ -19,9 +19,11 @@ func (dn *Dename) ListenForClients() {
 	}
 	for {
 		conn, err := client_lnr.Accept()
-		if err == nil {
-			_ = conn // TODO: client handling
+		if err != nil {
+			log.Printf("client_lnr.Accept(): %s", err)
+			continue
 		}
+		go dn.HandleClient(conn)
 	}
 }
 

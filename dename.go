@@ -168,35 +168,35 @@ func (dn *Dename) HandleClientTransfer(rq_bs []byte) {
 	if err != nil {
 		return
 	}
-	dn.c.IncomingRequests <- rq_bs
 	_, err = dn.db.Exec(`INSERT INTO name_locked(name,request) VALUES($1,$2)`,
 		name, rq_bs)
 	if err == nil {
 		dn.c.IncomingRequests <- rq_bs
 	} else if pgutil.IsError(err, pgutil.ErrUniqueViolation) {
-		return // could not acquire lock
+		log.Printf("Name %s already locked for a transaction", name)
+		return
 	} else {
 		log.Fatalf("HandleClientTransfer: Lock a name: %s", err)
 	}
 }
 
-func (dn *Dename) ValidateRequest(rq_bs []byte) (name []byte, new_pk *sgp.Entity, err error) {
+func (dn *Dename) ValidateRequest(rq_bs []byte) ([]byte, *sgp.Entity, error) {
 	rq_signed := &sgp.Signed{}
-	if err = proto.Unmarshal(rq_bs, rq_signed); err != nil {
-		return
+	if err := proto.Unmarshal(rq_bs, rq_signed); err != nil {
+		return nil, nil, err
 	}
 	transfer := &protocol.TransferName{}
-	if err = proto.Unmarshal(rq_signed.Message, transfer); err != nil {
-		return
+	if err := proto.Unmarshal(rq_signed.Message, transfer); err != nil {
+		return nil, nil, err
 	}
-	new_pk = new(sgp.Entity)
-	if err = new_pk.Parse(transfer.PublicKey); err != nil {
-		return
+	new_pk := new(sgp.Entity)
+	if err := new_pk.Parse(transfer.PublicKey); err != nil {
+		return nil, nil, err
 	}
 
 	var old_pk_bs []byte
 	var old_pk *sgp.Entity
-	err = dn.db.QueryRow("SELECT pubkey FROM name_mapping WHERE name = $1",
+	err := dn.db.QueryRow("SELECT pubkey FROM name_mapping WHERE name = $1",
 		transfer.Name).Scan(&old_pk_bs)
 	if err == nil { // name already in use; transfer
 		old_pk = new(sgp.Entity)
@@ -213,13 +213,21 @@ func (dn *Dename) ValidateRequest(rq_bs []byte) (name []byte, new_pk *sgp.Entity
 		return nil, nil, err
 	}
 	// TODO: require a proof of freshnesh of the request
-	return
+	return transfer.Name, new_pk, nil
 }
 
 func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
-	shared_prng *prng.PRNG) []byte {
-	var last_snapshot int64 // TODO: load last_snapshot
-	// everything here must be idempotent as this function may be run multiple times
+	shared_prng *prng.PRNG, round_id int64) []byte {
+	// everything here must be idempotent
+	var last_snapshot int64
+	if round_id != 0 {
+		err := dn.db.QueryRow(`SELECT snapshot from naming_snapshots
+			WHERE round = $1`, round_id-1).Scan(&last_snapshot)
+		if err != nil {
+			log.Fatalf("SELECT snapshot for round %d: %s", round_id-1, err)
+		}
+	}
+
 	mapHandle, err := dn.merklemap.GetSnapshot(last_snapshot).OpenHandle()
 	if err != nil {
 		log.Fatalf("dn.merklemap.GetSnapshot(last_snapshot).OpenHandle(): %s", err)
@@ -245,26 +253,31 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 	}
 	defer unlock.Close()
 
-	name_modified := make(map[string]int)
-	for peer_id := range rand.New(shared_prng).Perm(len(peer_rq_map)) {
-		for _, rq_bs := range *peer_rq_map[int64(peer_id)] {
+	peer_ids := make([]int64, 0, len(peer_rq_map))
+	for id := range peer_rq_map {
+		peer_ids = append(peer_ids, id)
+	}
+	name_modified := make(map[string]int64)
+	for i := range rand.New(shared_prng).Perm(len(peer_rq_map)) {
+		peer_id := peer_ids[i]
+		for _, rq_bs := range *peer_rq_map[peer_id] {
 			name, pk, err := dn.ValidateRequest(rq_bs)
 			if err != nil {
-				log.Fatal("%d accepted a bad request: %s", peer_id, err)
+				log.Fatalf("%d accepted a bad request: %s", peer_id, err)
 			}
-			if winner_id, already := name_modified[string(name)]; already {
-				log.Printf("Tie over %s between %d and %d broken in favor of %d",
-					string(name), peer_id, winner_id, winner_id)
+			if _, already := name_modified[string(name)]; already {
 				continue
 			}
+			name_modified[string(name)] = peer_id
 			err = mapHandle.Set(merklemap.Hash(name), merklemap.Hash(pk.Bytes))
 			if err != nil {
 				log.Fatalf("mapHandle.Set(name,pk): %s", err)
 			}
-			if _, err = create.Exec(name); err != nil {
+			_, err = create.Exec(name)
+			if err != nil && !pgutil.IsError(err, pgutil.ErrUniqueViolation) {
 				log.Fatalf("QueueProcessor: create.Exec(name): %s", err)
 			}
-			if _, err = assign.Exec(name, pk.Bytes); err != nil {
+			if _, err = assign.Exec(pk.Bytes, name); err != nil {
 				log.Fatalf("QueueProcessor: create.Exec(name): %s", err)
 			}
 			if _, err = unlock.Exec(name, rq_bs); err != nil {
@@ -281,6 +294,14 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 		log.Fatalf("mapHandle.FinishUpdate(): %s", err)
 	}
 	new_snapshot := newNaming.GetId()
-	_ = new_snapshot // TODO: save the new snapshot
+
+	_, err = dn.db.Exec(`INSERT INTO naming_snapshots(round, snapshot)
+		VALUES($1,$2)`, round_id, new_snapshot)
+	if err != nil && !pgutil.IsError(err, pgutil.ErrUniqueViolation) {
+		log.Fatalf("INSERT round %d snapshot %d: %s", round_id, new_snapshot, err)
+	}
+
+	log.Printf("QueueProcessor: round %d with %d transfers: snapshot %d\n = %x",
+		round_id, len(name_modified), new_snapshot, *rootHash)
 	return rootHash[:]
 }

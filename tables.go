@@ -19,4 +19,12 @@ func (dn *Dename) CreateTables() {
 	if err != nil {
 		log.Fatal("Cannot create table name_locked: ", err)
 	}
+
+	// naming_snapshots
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS naming_snapshots (
+		round bigint not null unique primary key,
+		snapshot bigint not null);`)
+	if err != nil {
+		log.Fatal("Cannot create table naming_snapshots: ", err)
+	}
 }
