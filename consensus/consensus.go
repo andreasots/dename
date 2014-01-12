@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"github.com/andres-erbsen/dename/pgutil"
 	"github.com/andres-erbsen/dename/prng"
-	"github.com/andres-erbsen/dename/protocol"
 	"github.com/andres-erbsen/dename/ringchannel"
 	"github.com/andres-erbsen/sgp"
 	"log"
@@ -33,22 +32,24 @@ type Consensus struct {
 	genesisTime    time.Time
 	TickInterval   time.Duration
 
-	router *Router
-	Peers  map[int64]Peer_
+	router    *Router
+	Peers     map[int64]Peer_
+	sign_tags map[int]uint64 // COMMITMENT, ACKNOWLEDGEMENT, PUBLISH -> tag
 
-	IncomingRequests                         chan []byte
-	// Actually channels of *protocol.S2SMessage
+	IncomingRequests chan []byte
+	// Actually channels of *ConsensusMSG
 	incomingMessagesIn, incomingMessagesNext chan interface{}
 }
 
 type serialized_msg struct {
 	bytes []byte
-	msg   *protocol.S2SMessage
+	msg   *ConsensusMSG
 }
 
 func NewConsensus(db *sql.DB, our_sk *sgp.SecretKey, our_id int64,
 	queueProcessor QueueProcessor, genesisTime time.Time,
-	tickInterval time.Duration, peers map[int64]Peer_) *Consensus {
+	tickInterval time.Duration, peers map[int64]Peer_,
+	sign_tags map[int]uint64) *Consensus {
 	c := new(Consensus)
 	c.db = db
 	c.our_sk = our_sk
@@ -58,6 +59,7 @@ func NewConsensus(db *sql.DB, our_sk *sgp.SecretKey, our_id int64,
 	c.genesisTime = genesisTime
 	c.router = newRouter()
 	c.Peers = peers
+	c.sign_tags = sign_tags
 
 	c.incomingMessagesIn = make(chan interface{})
 	c.incomingMessagesNext = make(chan interface{})
@@ -74,7 +76,7 @@ func NewConsensus(db *sql.DB, our_sk *sgp.SecretKey, our_id int64,
 	return c
 }
 
-func (c *Consensus) broadcast(msg *protocol.S2SMessage) {
+func (c *Consensus) broadcast(msg *ConsensusMSG) {
 	msg.Server = &c.our_id
 	msg_bs, err := proto.Marshal(msg)
 	if err != nil {
@@ -91,7 +93,7 @@ func (c *Consensus) broadcast(msg *protocol.S2SMessage) {
 func (c *Consensus) RefreshPeer(id int64) (err error) {
 	last_round_they_signed := int64(-1)
 	err = c.db.QueryRow(`SELECT round FROM messages WHERE sender = $1 AND
-		type = $2 ORDER BY round DESC LIMIT 1`, id, S2S_PUBLISH).Scan(
+		type = $2 ORDER BY round DESC LIMIT 1`, id, PUBLISH).Scan(
 		&last_round_they_signed)
 	if err != nil && err != sql.ErrNoRows {
 		log.Fatalf("last_round_they_signed: %s", err)
@@ -100,7 +102,7 @@ func (c *Consensus) RefreshPeer(id int64) (err error) {
 	// they may be missing our signature from the round they signed
 	rows, err := c.db.Query(`SELECT message FROM messages WHERE sender = $1
 		AND ((round = $2 AND type = $3) OR $2 < round) ORDER BY id`,
-		c.our_id, last_round_they_signed, S2S_PUBLISH)
+		c.our_id, last_round_they_signed, PUBLISH)
 	if err != nil {
 		log.Fatalf("Cannot load outgoing messages: %s", err)
 	}
@@ -172,7 +174,7 @@ func (c *Consensus) replayRound(round_n int64) {
 	}
 	defer rows.Close()
 	var msg_bs []byte
-	msg := new(protocol.S2SMessage)
+	msg := new(ConsensusMSG)
 	for rows.Next() {
 		err := rows.Scan(&msg_bs)
 		if err != nil {
@@ -187,7 +189,7 @@ func (c *Consensus) replayRound(round_n int64) {
 }
 
 func (c *Consensus) OnMessage(peer_id int64, msg_bs []byte) {
-	msg := new(protocol.S2SMessage)
+	msg := new(ConsensusMSG)
 	err := proto.Unmarshal(msg_bs, msg)
 	if err != nil {
 		log.Fatalf("OnMessage(%d,_): proto.Unmarshal(msg_bs, msg): %s", peer_id, err)
@@ -210,7 +212,7 @@ func (c *Consensus) handleMessages() {
 	}
 }
 
-func (c *Consensus) savemsg(msg *protocol.S2SMessage, msg_bs []byte) {
+func (c *Consensus) savemsg(msg *ConsensusMSG, msg_bs []byte) {
 	_, err := c.db.Exec(`INSERT INTO messages(round,type,sender,message)
 		VALUES($1,$2,$3,$4)`, *msg.Round, msgtype(msg), *msg.Server, msg_bs)
 	if err != nil && !pgutil.IsError(err, pgutil.ErrUniqueViolation) {

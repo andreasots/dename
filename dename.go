@@ -8,14 +8,15 @@ import (
 	"fmt"
 	"github.com/andres-erbsen/dename/consensus"
 	"github.com/andres-erbsen/dename/prng"
+	"github.com/andres-erbsen/dename/protocol"
 	"github.com/andres-erbsen/sgp"
 	"github.com/daniel-ziegler/merklemap"
 	"log"
 	"net"
-	"sync"
-	"time"
 	"os"
 	"os/signal"
+	"sync"
+	"time"
 )
 
 type Peer struct {
@@ -138,7 +139,7 @@ func main() {
 			}
 			return []byte("HASH1234HASH5678HASH8765HASH4321")
 		},
-		time.Now(), 4*time.Second, peers)
+		time.Now(), 4*time.Second, peers, protocol.ConsensusSignTags)
 	go dn.c.Run()
 
 	go dn.ListenForPeers()

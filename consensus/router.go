@@ -2,7 +2,6 @@ package consensus
 
 import (
 	"errors"
-	"github.com/andres-erbsen/dename/protocol"
 	"log"
 	"sync"
 	"time"
@@ -27,7 +26,7 @@ type router_match struct {
 }
 
 // handle a message and return whether it was the last one
-type router_handler func(msg *protocol.S2SMessage) bool
+type router_handler func(msg *ConsensusMSG) bool
 
 func (rt *Router) Receive(round int64, tp int, f router_handler) {
 	k := router_match{round, tp}
@@ -45,7 +44,7 @@ func (rt *Router) Receive(round int64, tp int, f router_handler) {
 	defer rt.Unlock()
 }
 
-func (rt *Router) Send(msg *protocol.S2SMessage) error {
+func (rt *Router) Send(msg *ConsensusMSG) error {
 	k := router_match{*msg.Round, msgtype(msg)}
 	rt.RLock()
 	f, ok := rt.routes[k]
@@ -62,7 +61,7 @@ func (rt *Router) Send(msg *protocol.S2SMessage) error {
 	return errNoRoute
 }
 
-func (rt *Router) SendWait(msg *protocol.S2SMessage) {
+func (rt *Router) SendWait(msg *ConsensusMSG) {
 	for rt.Send(msg) != nil {
 		time.Sleep(time.Millisecond * 50)
 	}

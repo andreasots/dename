@@ -13,7 +13,7 @@ import (
 )
 
 func (dn *Dename) ListenForClients() {
-	client_lnr, err := net.Listen("tcp", dn.us.addr+":6263")
+	client_lnr, err := net.Listen("tcp", dn.us.addr+":"+C2S_PORT)
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -4,11 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"sort"
-	"time"
 )
 
-const TICK_INTERVAL = 4 * time.Second
 const S2S_PORT = "6362"
+const C2S_PORT = "6263"
 
 var errPeer = errors.New("Peer id mismatch")
 
