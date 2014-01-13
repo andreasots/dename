@@ -88,13 +88,30 @@ func newRound(id int64, t time.Time, c *Consensus) (r *round) {
 	return
 }
 
+func (r *round) haveWeCommitted() bool {
+	var count int
+	err := r.c.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE round = $1
+		AND sender = $2 AND type = $3`,	r.id, r.c.our_id, COMMITMENT).Scan(&count)
+	if err != nil {
+		log.Fatalf("haveWeCommitted() round %d: %s", r.id, err)
+	}
+	return count > 0
+}
+
 // ColdStart starts the first round in a sequence, possibly right after newRound
 func (r *round) ColdStart() {
-	go r.acceptRequests(r.c.IncomingRequests)
+	if r.haveWeCommitted() {
+		// Don't actually open this round for clients again
+		go func(){
+			// (but do pretend to close it at the end)
+			<-r.afterRequests
+		}()
+	} else {
+		go r.acceptRequests(r.c.IncomingRequests)
+	}
 	r.startAcceptingPushes()
 	r.startHandlingCommitments()
 	r.startHandlingAcknowledgements()
-	r.next = newRound(r.id+1, r.openAtLeastUntil.Add(r.c.TickInterval), r.c)
 	r.next.startAcceptingPushes()
 	go r.Process()
 }
@@ -115,7 +132,7 @@ func (r *round) ColdStart() {
 //
 // At most three rounds can be active at once. If we have not published the
 // signed result round i, other servers cannot have finalized it so the last
-// round they can be accpeting requests for is i+1. If we have published the
+// round they can be accepting requests for is i+1. If we have published the
 // signed result but have not yet received the results from others, it may be
 // still the case that they have proceeded: they may be processing round i+1 and
 // accepting requests for i+2 and pushing them to us.
@@ -124,6 +141,7 @@ func (r *round) Process() {
 	log.Printf("processing round %v", r.id)
 	r.afterRequests <- struct{}{}
 	close(r.afterRequests)
+	go r.next.acceptRequests(r.c.IncomingRequests)
 	r.commitToQueue()
 
 	<-r.afterCommitments
@@ -170,7 +188,6 @@ loop:
 			break loop
 		}
 	}
-	go r.next.acceptRequests(rqs) // TODO: tail call optimization?
 }
 
 // startAcceptingPushes handles pushes from servers.

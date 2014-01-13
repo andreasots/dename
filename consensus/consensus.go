@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"code.google.com/p/goprotobuf/proto"
+	"code.google.com/p/go.crypto/nacl/secretbox"
 	"database/sql"
 	"github.com/andres-erbsen/dename/pgutil"
 	"github.com/andres-erbsen/dename/prng"
@@ -157,6 +158,9 @@ func (c *Consensus) Run() {
 	rows.Close()
 
 	round := newRound(id, t, c)
+	round.next = newRound(round.id+1, t.Add(c.TickInterval), c)
+	c.reloadRequests(round)
+	c.reloadRequests(round.next)
 	round.ColdStart()
 
 	c.replayRound(id)
@@ -167,6 +171,36 @@ func (c *Consensus) Run() {
 	}
 
 	c.handleMessages()
+}
+
+func (c *Consensus) reloadRequests(r *round) {
+	rows, err := c.db.Query(`SELECT message FROM messages
+		WHERE round = $1 AND sender = $2 AND type = $3 ORDER BY id ASC`, r.id, c.our_id, PUSH)
+	if err != nil {
+		log.Fatalf("Cannot load outgoing pushes for round %d: %s", r.id, err)
+	}
+	defer rows.Close()
+	var msg_bs []byte
+	msg := new(ConsensusMSG)
+	for rows.Next() {
+		err := rows.Scan(&msg_bs)
+		if err != nil {
+			log.Fatalf("msg from db: rows.Scan(&msg_bs): %s", err)
+		}
+		err = proto.Unmarshal(msg_bs, msg)
+		if err != nil {
+			log.Fatalf("reloadRequests(%d): proto.Unmarshal(msg_bs, msg): %s", r.id, err)
+		}
+		rq_box := msg.PushQueue
+		var nonce [24]byte
+		copy(nonce[:], rq_box[:24])
+		r.pushes[c.our_id][nonce] = rq_box
+		rq, ok := secretbox.Open(nil, rq_box[24:], &nonce, r.our_round_key)
+		if !ok {
+			log.Fatalf("reloadRequests(%d): Failed to decrypt our queue %x key %x", r.id, rq_box, *r.our_round_key)
+		}
+		*r.requests[c.our_id] = append(*r.requests[c.our_id], rq)
+	}
 }
 
 func (c *Consensus) replayRound(round_n int64) {
