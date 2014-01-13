@@ -11,6 +11,7 @@ import (
 	"github.com/andres-erbsen/dename/ringchannel"
 	"github.com/andres-erbsen/sgp"
 	"log"
+	"sort"
 	"sync"
 	"time"
 )
@@ -33,9 +34,9 @@ type round struct {
 	afterPublishes        chan struct{}
 
 	// the maps are const, pointer targets are mutable
-	requests map[int64]*[][]byte // populated by key handler decryptor (us: rq handler)
-	pushes   map[int64]*[][]byte // populated by push handler (us: rq handler)
-	commited map[int64]*[]byte   // set by commitment handler
+	requests map[int64]*[][]byte           // populated by key handler decryptor (us: rq handler)
+	pushes   map[int64]map[[24]byte][]byte // populated by push handler (us: rq handler)
+	commited map[int64]*[]byte             // set by commitment handler
 
 	our_round_key *[32]byte  // const
 	shared_prng   *prng.PRNG // pointer set at the end of key handler after
@@ -56,17 +57,16 @@ func newRound(id int64, t time.Time, c *Consensus) (r *round) {
 	r.afterWeHavePublished = make(chan struct{})
 	r.afterPublishes = make(chan struct{})
 	r.requests = make(map[int64]*[][]byte, len(r.c.Peers))
-	r.pushes = make(map[int64]*[][]byte, len(r.c.Peers))
+	r.pushes = make(map[int64]map[[24]byte][]byte, len(r.c.Peers))
 	r.commited = make(map[int64]*[]byte, len(r.c.Peers))
 	r.commitmentsRemaining = len(r.c.Peers) - 1
 	r.our_round_key = new([32]byte)
 
 	for id := range c.Peers {
 		r.requests[id] = new([][]byte)
-		r.pushes[id] = new([][]byte)
+		r.pushes[id] = make(map[[24]byte][]byte)
 		r.commited[id] = new([]byte)
 	}
-	*r.pushes[r.c.our_id] = make([][]byte, 0)
 	*r.requests[r.c.our_id] = make([][]byte, 0)
 
 	if _, err := rand.Read(r.our_round_key[:]); err != nil {
@@ -122,6 +122,7 @@ func (r *round) ColdStart() {
 func (r *round) Process() {
 	time.Sleep(r.openAtLeastUntil.Sub(time.Now()))
 	log.Printf("processing round %v", r.id)
+	r.afterRequests <- struct{}{}
 	close(r.afterRequests)
 	r.commitToQueue()
 
@@ -163,7 +164,7 @@ loop:
 				log.Fatalf("rand.Read(rq_box): %s", err)
 			}
 			rq_box := secretbox.Seal(nonce[:], rq_bs, nonce, r.our_round_key)
-			*r.pushes[r.c.our_id] = append(*r.pushes[r.c.our_id], rq_box)
+			r.pushes[r.c.our_id][*nonce] = rq_box
 			r.c.broadcast(&ConsensusMSG{Round: &r.id, PushQueue: rq_box})
 		case <-r.afterRequests:
 			break loop
@@ -181,7 +182,9 @@ loop:
 // is called on round i+2.
 func (r *round) startAcceptingPushes() {
 	r.c.router.Receive(r.id, PUSH, func(msg *ConsensusMSG) bool {
-		*r.pushes[*msg.Server] = append(*r.pushes[*msg.Server], msg.PushQueue)
+		nonce := [24]byte{}
+		copy(nonce[:], msg.PushQueue[:24])
+		r.pushes[*msg.Server][nonce] = msg.PushQueue
 		return false
 	})
 }
@@ -189,7 +192,8 @@ func (r *round) startAcceptingPushes() {
 // commitToQueue hashes our queue, signs it and publishes the result
 func (r *round) commitToQueue() {
 	our_id := r.c.our_id
-	qh := HashCommitData(r.id, our_id, r.our_round_key[:], *r.pushes[our_id])
+	qh := HashCommitData(r.id, our_id, r.our_round_key[:], r.pushes[our_id])
+	log.Printf("queue hash: %v, %x", len(r.pushes[our_id]), qh)
 	commitment_bs, err := proto.Marshal(&Commitment{
 		Round: &r.id, Server: &our_id, Hash: qh})
 	if err != nil {
@@ -322,23 +326,23 @@ func (r *round) startHandlingKeys() {
 		}
 		go func(peer_id int64, key *[32]byte) { // decrypt requests
 			defer decryptions.Done()
-			rqs := make([][]byte, len(*r.pushes[peer_id]))
-			nonce := new([24]byte)
-			for i, rq_box := range *r.pushes[peer_id] {
+			rqs := make([][]byte, len(r.pushes[peer_id]))
+			i := 0
+			for nonce, rq_box := range r.pushes[peer_id] {
 				var ok bool
-				copy(nonce[:], rq_box[:24])
-				rqs[i], ok = secretbox.Open(nil, rq_box[24:], nonce, key)
+				rqs[i], ok = secretbox.Open(nil, rq_box[24:], &nonce, key)
 				if !ok {
 					log.Fatalf("Failed to decrypt %d's queue %x key %x", peer_id, rq_box, *key)
 				}
+				i++
 			}
 			*r.requests[peer_id] = rqs
 		}(*msg.Server, keys[*msg.Server])
 		go func(peer_id int64, key *[32]byte) { // verify commitments
 			defer decryptions.Done()
-			qh := HashCommitData(r.id, peer_id, key[:], *r.pushes[peer_id])
+			qh := HashCommitData(r.id, peer_id, key[:], r.pushes[peer_id])
 			if !bytes.Equal(qh, *r.commited[peer_id]) {
-				log.Fatalf("%d has bad queue hash: %v, %x, %x", peer_id, *r.pushes[peer_id], qh, *r.commited[peer_id])
+				log.Fatalf("%d has bad queue hash: %v, %x, %x", peer_id, len(r.pushes[peer_id]), qh, *r.commited[peer_id])
 			}
 		}(*msg.Server, keys[*msg.Server])
 		done := len(keys) == len(r.c.Peers)
@@ -438,7 +442,15 @@ func (r *round) startHandlingPublishes() {
 	}()
 }
 
-func HashCommitData(round, commiter int64, key []byte, pushes [][]byte) []byte {
+func HashCommitData(round, commiter int64, key []byte,
+	pushes_map map[[24]byte][]byte) []byte {
+	pushes := make([][]byte, len(pushes_map))
+	i := 0
+	for _, rq_box := range pushes_map {
+		pushes[i] = rq_box
+		i++
+	}
+	sort.Sort(ByteSlices(pushes))
 	commit_data_bytes, err := proto.Marshal(&CommitData{Round: &round,
 		Server: &commiter, RoundKey: key, TransactionQueue: pushes})
 	if err != nil {
@@ -448,3 +460,9 @@ func HashCommitData(round, commiter int64, key []byte, pushes [][]byte) []byte {
 	h.Write(commit_data_bytes)
 	return h.Sum(nil)
 }
+
+type ByteSlices [][]byte
+
+func (p ByteSlices) Len() int           { return len(p) }
+func (p ByteSlices) Less(i, j int) bool { return bytes.Compare(p[i], p[j]) < 0 }
+func (p ByteSlices) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
