@@ -91,7 +91,7 @@ func newRound(id int64, t time.Time, c *Consensus) (r *round) {
 func (r *round) haveWeCommitted() bool {
 	var count int
 	err := r.c.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE round = $1
-		AND sender = $2 AND type = $3`,	r.id, r.c.our_id, COMMITMENT).Scan(&count)
+		AND sender = $2 AND type = $3`, r.id, r.c.our_id, COMMITMENT).Scan(&count)
 	if err != nil {
 		log.Fatalf("haveWeCommitted() round %d: %s", r.id, err)
 	}
@@ -102,7 +102,7 @@ func (r *round) haveWeCommitted() bool {
 func (r *round) ColdStart() {
 	if r.haveWeCommitted() {
 		// Don't actually open this round for clients again
-		go func(){
+		go func() {
 			// (but do pretend to close it at the end)
 			<-r.afterRequests
 		}()
@@ -362,22 +362,19 @@ func (r *round) startHandlingKeys() {
 				log.Fatalf("%d has bad queue hash: %v, %x, %x", peer_id, len(r.pushes[peer_id]), qh, *r.commited[peer_id])
 			}
 		}(*msg.Server, keys[*msg.Server])
-		done := len(keys) == len(r.c.Peers)
-		if done {
-			// seed the shared prng
-			h := sha256.New()
-			for id := range r.c.Peers {
-				h.Write(keys[id][:])
-			}
-			seed := new([32]byte)
-			seed_bs := h.Sum(nil)
-			copy(seed[:], seed_bs)
-			r.shared_prng = prng.NewPRNG(seed)
-		}
-		return done
+		return len(keys) == len(r.c.Peers)
 	})
 	go func() {
 		decryptions.Wait()
+		// seed the shared prng
+		h := sha256.New()
+		for id := range r.c.Peers {
+			h.Write(keys[id][:])
+		}
+		seed := new([32]byte)
+		seed_bs := h.Sum(nil)
+		copy(seed[:], seed_bs)
+		r.shared_prng = prng.NewPRNG(seed)
 		close(r.afterKeys)
 	}()
 }
