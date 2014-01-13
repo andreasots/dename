@@ -50,6 +50,7 @@ func (rt *Router) Send(msg *ConsensusMSG) error {
 	f, ok := rt.routes[k]
 	rt.RUnlock()
 	if ok {
+		// log.Printf("%v %v %v", *msg.Round, msgtypeName[msgtype(msg)], *msg.Server)
 		closing := f(msg)
 		if closing {
 			rt.Lock()
