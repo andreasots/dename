@@ -114,7 +114,7 @@ func main() {
 			log.Fatalf("Bad base64 as public key: %s (for %d)", err, peer.id)
 		}
 		if err := peer.pk.Parse(pk_bs); err != nil {
-			log.Fatalf("Bad pk for %d: %s", peer.id, err)
+			log.Fatalf("Bad pk for %d: %s; %x", peer.id, err, pk_bs)
 		}
 		addr_struct, err := net.ResolveIPAddr("", peercfg.Host)
 		if err != nil {
@@ -198,13 +198,14 @@ func (dn *Dename) ValidateRequest(rq_bs []byte) ([]byte, *sgp.Entity, error) {
 	var old_pk *sgp.Entity
 	err := dn.db.QueryRow("SELECT pubkey FROM name_mapping WHERE name = $1",
 		transfer.Name).Scan(&old_pk_bs)
-	if err == nil { // name already in use; transfer
+	if err == sql.ErrNoRows || len(old_pk_bs) == 0 { // new name; registration
+		// (the pk could be empty if the name was inserted but not updated yet)
+		old_pk = new_pk
+	} else if err == nil { // name already in use; transfer
 		old_pk = new(sgp.Entity)
 		if err := old_pk.Parse(old_pk_bs); err != nil {
-			log.Fatalf("Bad pk in database: %s", err)
+			log.Fatalf("Bad pk in database: %s; %x", err, old_pk_bs)
 		}
-	} else if err == sql.ErrNoRows { // new name; registration
-		old_pk = new_pk
 	} else { // barf
 		log.Fatalf("Load old pk from db: %s", err)
 	}
