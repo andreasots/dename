@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -26,7 +27,8 @@ func (dn *Dename) ListenForClients() {
 			log.Printf("client_lnr.Accept(): %s", err)
 			continue
 		}
-		go dn.HandleClient(conn)
+		dn.HandleClient(conn)
+		runtime.Gosched()
 	}
 }
 
