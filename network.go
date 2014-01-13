@@ -12,6 +12,9 @@ import (
 	"sync"
 )
 
+const S2S_PORT = "6362"
+const C2S_PORT = "6263"
+
 func (dn *Dename) ListenForClients() {
 	client_lnr, err := net.Listen("tcp", dn.us.addr+":"+C2S_PORT)
 	if err != nil {
@@ -121,7 +124,7 @@ func (peer *Peer) ReceiveLoop(f func(int64, []byte)) (err error) {
 		if err != nil {
 			break
 		}
-		go f(peer.id, buf)
+		f(peer.id, buf)
 	}
 	if err != nil {
 		peer.Lock()

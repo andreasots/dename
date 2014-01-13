@@ -86,7 +86,9 @@ func (c *Consensus) broadcast(msg *ConsensusMSG) {
 	c.savemsg(msg, msg_bs)
 	for id, peer := range c.Peers {
 		if id != c.our_id {
-			go peer.Send(msg_bs)
+			if err := peer.Send(msg_bs); err != nil {
+				log.Printf("peer%d.Send(msg_bs{%d %s}): %s", id, *msg.Round, msgtypeName[msgtype(msg)], err)
+			}
 		}
 	}
 }
