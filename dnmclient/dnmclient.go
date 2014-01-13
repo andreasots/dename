@@ -2,6 +2,7 @@ package dnmclient
 
 import (
 	"code.google.com/p/goprotobuf/proto"
+	"github.com/andres-erbsen/dename/consensus"
 	"github.com/andres-erbsen/dename/protocol"
 	"github.com/andres-erbsen/sgp"
 	"github.com/daniel-ziegler/merklemap"
@@ -53,7 +54,7 @@ func New(cfgfile string) (dnmc *DenameClient, err error) {
 	return dnmc, nil
 }
 
-func (dnmc *DenameClient) Lookup(name string) (entity *sgp.Entity, err error) {
+func (dnmc *DenameClient) Lookup(name []byte) (entity *sgp.Entity, err error) {
 	for _, peer := range dnmc.cfg.Peer {
 		entity, err = dnmc.LookupFrom(peer.Host, name)
 		if err == nil {
@@ -66,8 +67,8 @@ func (dnmc *DenameClient) Lookup(name string) (entity *sgp.Entity, err error) {
 	return nil, errors.New("Lookup failed")
 }
 
-func (dnmc *DenameClient) LookupFrom(host, name string) (entity *sgp.Entity, err error) {
-	query_bs, err := proto.Marshal(&protocol.C2SMessage{Lookup: &name})
+func (dnmc *DenameClient) LookupFrom(host string, name []byte) (entity *sgp.Entity, err error) {
+	query_bs, err := proto.Marshal(&protocol.C2SMessage{Lookup: name})
 	if err != nil {
 		return
 	}
@@ -115,16 +116,16 @@ func (dnmc *DenameClient) LookupFrom(host, name string) (entity *sgp.Entity, err
 		return
 	}
 
-	rootdata := new(protocol.MappingRoot)
+	rootdata := new(consensus.ConsensusResult)
 	err = proto.Unmarshal(root_signed.Message, rootdata)
 	if err != nil {
 		return
 	}
 
 	pk_hash := merklemap.Hash(response.PublicKey)
-	name_hash := merklemap.Hash([]byte(name))
+	name_hash := merklemap.Hash(name)
 	perceived_root_hash := path.ComputeRootHash(name_hash, pk_hash)
-	if !bytes.Equal(rootdata.Root, perceived_root_hash) {
+	if !bytes.Equal(rootdata.Result, perceived_root_hash) {
 		return nil, errors.New("Failed to reproduce root hash")
 	}
 

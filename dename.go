@@ -159,8 +159,64 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 	case msg.TransferName != nil:
 		dn.HandleClientTransfer(msg.TransferName)
 	case msg.Lookup != nil:
-		// TODO: dn.HandleLookup(conn, *msg.Lookup)
+		dn.HandleClientLookup(conn, msg.Lookup)
 	}
+}
+
+func (dn *Dename) HandleClientLookup(conn net.Conn, name []byte) {
+	name_hash := merklemap.Hash(name)
+	var signed_root []byte
+	var round, snapshot int64
+	err := dn.db.QueryRow(`SELECT id, signed_result from rounds WHERE
+	signed_result is not NULL ORDER BY id DESC`).Scan(&round, &signed_root)
+	if err != nil {
+		log.Fatalf("SELECT last signed round: %s", err)
+	}
+	err = dn.db.QueryRow(`SELECT snapshot from naming_snapshots
+		WHERE round = $1`, round).Scan(&snapshot)
+	if err != nil {
+		log.Fatalf("SELECT snapshot for round %d: %s", round, err)
+	}
+	mapHandle, err := dn.merklemap.GetSnapshot(snapshot).OpenHandle()
+	if err != nil {
+		log.Fatalf("mm.GetSnapshot(%d).OpenHandle(): %s", snapshot, err)
+	}
+	pk := dn.Resolve(name)
+	if pk == nil {
+		return
+	}
+	_, path, err := mapHandle.GetPath(name_hash)
+	if path == nil {
+		log.Fatal("Name %s in db but not in merklemap: %s", name, err)
+	}
+	path_bs, err := proto.Marshal(path)
+	if err != nil {
+		panic(err)
+	}
+	response_bs, err := proto.Marshal(&protocol.LookupResponse{
+		Root: signed_root, Path: path_bs, PublicKey: pk.Bytes})
+	if err != nil {
+		panic(err)
+	}
+	conn.Write(response_bs)
+}
+
+// Resolve does a Name -> Public key lookup. Returns nil if not found.
+func (dn *Dename) Resolve(name []byte) (pk *sgp.Entity) {
+	var pk_bs []byte
+	err := dn.db.QueryRow("SELECT pubkey FROM name_mapping WHERE name = $1",
+		name).Scan(&pk_bs)
+	if err == sql.ErrNoRows || len(pk_bs) == 0 {
+		// (the pk could be empty if the name was inserted but not updated yet)
+	} else if err == nil { // name already in use; transfer
+		pk = new(sgp.Entity)
+		if err := pk.Parse(pk_bs); err != nil {
+			log.Fatalf("Bad pk in database: %s; %x", err, pk_bs)
+		}
+	} else { // barf
+		log.Fatalf("Load old pk from db: %s", err)
+	}
+	return pk
 }
 
 func (dn *Dename) HandleClientTransfer(rq_bs []byte) {
@@ -194,23 +250,11 @@ func (dn *Dename) ValidateRequest(rq_bs []byte) ([]byte, *sgp.Entity, error) {
 		return nil, nil, err
 	}
 
-	var old_pk_bs []byte
-	var old_pk *sgp.Entity
-	err := dn.db.QueryRow("SELECT pubkey FROM name_mapping WHERE name = $1",
-		transfer.Name).Scan(&old_pk_bs)
-	if err == sql.ErrNoRows || len(old_pk_bs) == 0 { // new name; registration
-		// (the pk could be empty if the name was inserted but not updated yet)
+	old_pk := dn.Resolve(transfer.Name)
+	if old_pk == nil {
 		old_pk = new_pk
-	} else if err == nil { // name already in use; transfer
-		old_pk = new(sgp.Entity)
-		if err := old_pk.Parse(old_pk_bs); err != nil {
-			log.Fatalf("Bad pk in database: %s; %x", err, old_pk_bs)
-		}
-	} else { // barf
-		log.Fatalf("Load old pk from db: %s", err)
 	}
-
-	if _, err = old_pk.Verify(rq_bs, protocol.SIGN_TAG_TRANSFER); err != nil {
+	if _, err := old_pk.Verify(rq_bs, protocol.SIGN_TAG_TRANSFER); err != nil {
 		return nil, nil, err
 	}
 	// TODO: require a proof of freshnesh of the request

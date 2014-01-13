@@ -16,7 +16,7 @@ func main() {
 		panic(err)
 	}
 
-	pk, err := dnmc.Lookup(os.Args[1])
+	pk, err := dnmc.Lookup([]byte(os.Args[1]))
 	if err != nil {
 		os.Stderr.Write([]byte(err.Error() + "\n"))
 		os.Exit(1)
