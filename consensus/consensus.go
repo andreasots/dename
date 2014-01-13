@@ -1,8 +1,8 @@
 package consensus
 
 import (
-	"code.google.com/p/goprotobuf/proto"
 	"code.google.com/p/go.crypto/nacl/secretbox"
+	"code.google.com/p/goprotobuf/proto"
 	"database/sql"
 	"github.com/andres-erbsen/dename/pgutil"
 	"github.com/andres-erbsen/dename/prng"
@@ -118,6 +118,7 @@ func (c *Consensus) RefreshPeer(id int64) (err error) {
 			log.Fatalf("our msg from db: rows.Scan(&msg_bs): %s", err)
 		}
 		if err := c.Peers[id].Send(msg_bs); err != nil {
+			log.Printf("RefreshPeer: c.Peers[id].Send(msg_bs): %s", err)
 			return err
 		}
 	}
@@ -125,12 +126,6 @@ func (c *Consensus) RefreshPeer(id int64) (err error) {
 }
 
 func (c *Consensus) Run() {
-	for id := range c.Peers {
-		if id != c.our_id {
-			go c.RefreshPeer(id) // Ignore network errors
-		}
-	}
-
 	rows, err := c.db.Query(`SELECT id, close_time FROM rounds
 		WHERE signed_result IS NULL ORDER BY id`)
 	if err != nil {
@@ -244,7 +239,7 @@ func (c *Consensus) handleMessages() {
 		c.savemsg(msg, item.(serialized_msg).bytes)
 		err := c.router.Send(msg)
 		if err != nil {
-			log.Printf("handleMessages(): router.Send() round %d type %d: %s", *msg.Round, msgtype(msg), err)
+			log.Printf("%d-> %d:%v: %s", *msg.Server, *msg.Round, msgtypeName[msgtype(msg)], err)
 		}
 	}
 }
