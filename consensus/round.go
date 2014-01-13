@@ -385,7 +385,6 @@ func (r *round) startHandlingPublishes() {
 	// actually chan *sgp.Signed
 	publishesIn := make(chan interface{})
 	publishesNext := make(chan interface{})
-	othersHavePublished := make(chan struct{})
 	go ringchannel.RingIQ(publishesIn, publishesNext)
 	hasPublished := make(map[int64]struct{})
 	r.c.router.Receive(r.id, PUBLISH, func(msg *ConsensusMSG) bool {
@@ -411,12 +410,10 @@ func (r *round) startHandlingPublishes() {
 		done := len(hasPublished) == len(r.c.Peers)-1
 		if done {
 			close(publishesIn)
-			close(othersHavePublished)
 		}
 		return done
 	})
 	go func() {
-		<-othersHavePublished
 		<-r.afterWeHavePublished
 		// Finish verifying & aggregating publishes
 		for item := range publishesNext {
