@@ -41,8 +41,6 @@ type round struct {
 	our_round_key *[32]byte  // const
 	shared_prng   *prng.PRNG // pointer set at the end of key handler after
 	signed_result *sgp.Signed
-
-	commitmentsRemaining int
 }
 
 func newRound(id int64, t time.Time, c *Consensus) (r *round) {
@@ -59,7 +57,6 @@ func newRound(id int64, t time.Time, c *Consensus) (r *round) {
 	r.requests = make(map[int64]*[][]byte, len(r.c.Peers))
 	r.pushes = make(map[int64]map[[24]byte][]byte, len(r.c.Peers))
 	r.commited = make(map[int64]*[]byte, len(r.c.Peers))
-	r.commitmentsRemaining = len(r.c.Peers) - 1
 	r.our_round_key = new([32]byte)
 
 	for id := range c.Peers {
@@ -239,7 +236,6 @@ func (r *round) checkCommitmentUnique(peer_id int64, signed_bs []byte) {
 	if peer_id != r.c.our_id {
 		if *r.commited[peer_id] == nil {
 			*r.commited[peer_id] = commitment.Hash
-			r.commitmentsRemaining--
 		} else if !bytes.Equal(*r.commited[peer_id], commitment.Hash) {
 			log.Fatalf("Multiple different commitments from %d: %v and %v", peer_id, *r.commited[peer_id], commitment.Hash)
 		}
@@ -253,9 +249,11 @@ func (r *round) checkCommitmentUnique(peer_id int64, signed_bs []byte) {
 // wait for.
 func (r *round) startHandlingCommitments() {
 	ack := &Acknowledgement{Acker: &r.c.our_id}
+	hasCommited := make(map[int64]struct{})
 	r.c.router.Receive(r.id, COMMITMENT, func(msg *ConsensusMSG) bool {
 		r.checkCommitmentUnique(*msg.Server, msg.Commitment)
-		done := r.commitmentsRemaining == 0
+		hasCommited[*msg.Server] = struct{}{}
+		done := len(hasCommited) == len(r.c.Peers)-1
 		if done {
 			r.startHandlingKeys()
 		}
