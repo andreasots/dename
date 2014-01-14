@@ -47,6 +47,9 @@ type Dename struct {
 
 	merklemap *merklemap.Map
 	c         *consensus.Consensus
+
+	lockednames_mutex sync.Mutex
+	lockednames       map[string]struct{}
 }
 
 type Cfg struct {
@@ -86,7 +89,8 @@ func main() {
 		log.Fatalf("Failed to parse gcfg data: %s", err)
 	}
 	dn := &Dename{peers: make(map[int64]*Peer, len(cfg.Peer)),
-		addr2peer: make(map[string]*Peer, len(cfg.Peer))}
+		addr2peer:   make(map[string]*Peer, len(cfg.Peer)),
+		lockednames: make(map[string]struct{})}
 	dn.db, err = sql.Open("postgres", "user="+cfg.Database.User+" password="+cfg.Database.Password+" dbname="+cfg.Database.Name+" sslmode=disable")
 	if err != nil {
 		log.Fatalf("Cannot open database: %s", err)
@@ -156,15 +160,14 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 	}
 
 	switch {
-	case msg.TransferName != nil:
-		dn.HandleClientTransfer(msg.TransferName)
 	case msg.Lookup != nil:
 		dn.HandleClientLookup(conn, msg.Lookup)
+	case msg.TransferName != nil:
+		dn.HandleClientTransfer(msg.TransferName)
 	}
 }
 
 func (dn *Dename) HandleClientLookup(conn net.Conn, name []byte) {
-	name_hash := merklemap.Hash(name)
 	var signed_root []byte
 	var round, snapshot int64
 	err := dn.db.QueryRow(`SELECT id, signed_result from rounds WHERE
@@ -174,20 +177,17 @@ func (dn *Dename) HandleClientLookup(conn net.Conn, name []byte) {
 	}
 	err = dn.db.QueryRow(`SELECT snapshot from naming_snapshots
 		WHERE round = $1`, round).Scan(&snapshot)
-	if err != nil {
+	if err != nil && err != sql.ErrNoRows {
 		log.Fatalf("SELECT snapshot for round %d: %s", round, err)
 	}
 	mapHandle, err := dn.merklemap.GetSnapshot(snapshot).OpenHandle()
 	if err != nil {
 		log.Fatalf("mm.GetSnapshot(%d).OpenHandle(): %s", snapshot, err)
 	}
-	pk := dn.Resolve(name)
+	defer mapHandle.Close()
+	pk, path := dn.Resolve(mapHandle, name)
 	if pk == nil {
 		return
-	}
-	_, path, err := mapHandle.GetPath(name_hash)
-	if path == nil {
-		log.Fatal("Name %s in db but not in merklemap: %s", name, err)
 	}
 	path_bs, err := proto.Marshal(path)
 	if err != nil {
@@ -201,22 +201,25 @@ func (dn *Dename) HandleClientLookup(conn net.Conn, name []byte) {
 	conn.Write(response_bs)
 }
 
-// Resolve does a Name -> Public key lookup. Returns nil if not found.
-func (dn *Dename) Resolve(name []byte) (pk *sgp.Entity) {
-	var pk_bs []byte
-	err := dn.db.QueryRow("SELECT pubkey FROM name_mapping WHERE name = $1",
-		name).Scan(&pk_bs)
-	if err == sql.ErrNoRows || len(pk_bs) == 0 {
-		// (the pk could be empty if the name was inserted but not updated yet)
-	} else if err == nil { // name already in use; transfer
-		pk = new(sgp.Entity)
-		if err := pk.Parse(pk_bs); err != nil {
-			log.Fatalf("Bad pk in database: %s; %x", err, pk_bs)
-		}
-	} else { // barf
-		log.Fatalf("Load old pk from db: %s", err)
+// Resolve does a Name -> PublicKey,MerkleProof lookup. Returns nil if not found
+func (dn *Dename) Resolve(mapHandle *merklemap.Handle, name []byte) (*sgp.Entity, *merklemap.MerklePath) {
+	pk_hash, path, err := mapHandle.GetPath(merklemap.Hash(name))
+	if err != nil {
+		log.Fatal("mapHandle.GetPath(h(%s)): %s", string(name), err)
+	} else if pk_hash == nil {
+		return nil, nil
 	}
-	return pk
+	var pk_bs []byte
+	err = dn.db.QueryRow(`SELECT preimage FROM rainbow
+		WHERE hash = $1`, pk_hash[:]).Scan(&pk_bs)
+	if err != nil && err != sql.ErrNoRows {
+		log.Fatalf("SELECT pk for \"%s\" from db: %s", string(name), err)
+	}
+	pk := new(sgp.Entity)
+	if err := pk.Parse(pk_bs); err != nil {
+		log.Fatal("Bad pk in database")
+	}
+	return pk, path
 }
 
 func (dn *Dename) HandleClientTransfer(rq_bs []byte) {
@@ -224,24 +227,51 @@ func (dn *Dename) HandleClientTransfer(rq_bs []byte) {
 	if err != nil {
 		return
 	}
-	_, err = dn.db.Exec(`INSERT INTO name_locked(name,request) VALUES($1,$2)`,
-		name, rq_bs)
-	if err == nil {
-		dn.c.IncomingRequests <- rq_bs
-	} else if pgutil.IsError(err, pgutil.ErrUniqueViolation) {
-		log.Printf("Name %s already locked for a transaction", name)
+	dn.lockednames_mutex.Lock()
+	if _, locked := dn.lockednames[string(name)]; locked {
+		dn.lockednames_mutex.Unlock()
+		log.Printf("Name \"%s\" already locked for update", string(name))
 		return
 	} else {
-		log.Fatalf("HandleClientTransfer: Lock a name: %s", err)
+		dn.lockednames[string(name)] = struct{}{}
+		dn.lockednames_mutex.Unlock()
+		dn.c.IncomingRequests <- rq_bs
 	}
 }
 
 func (dn *Dename) ValidateRequest(rq_bs []byte) ([]byte, *sgp.Entity, error) {
-	rq_signed := &sgp.Signed{}
+	name, new_pk, err := NaiveParseRequest(rq_bs)
+	if err != nil {
+		return nil, nil, err
+	}
+	snapshot := int64(0) // if ErrNoRows
+	err = dn.db.QueryRow(`SELECT snapshot from naming_snapshots
+		ORDER BY round DESC LIMIT 1`).Scan(&snapshot)
+	if err != nil && err != sql.ErrNoRows {
+		log.Fatalf("SELECT latest snapshot: %s", err)
+	}
+	mapHandle, err := dn.merklemap.GetSnapshot(snapshot).OpenHandle()
+	if err != nil {
+		log.Fatalf("mm.GetSnapshot(%d).OpenHandle(): %s", snapshot, err)
+	}
+	defer mapHandle.Close()
+	old_pk, _ := dn.Resolve(mapHandle, name)
+	if old_pk == nil {
+		old_pk = new_pk
+	}
+	if _, err := old_pk.Verify(rq_bs, protocol.SIGN_TAG_TRANSFER); err != nil {
+		return nil, nil, err
+	}
+	// TODO: require a proof of freshness of the request
+	return name, new_pk, nil
+}
+
+func NaiveParseRequest(rq_bs []byte) ([]byte, *sgp.Entity, error) {
+	rq_signed := new(sgp.Signed)
 	if err := proto.Unmarshal(rq_bs, rq_signed); err != nil {
 		return nil, nil, err
 	}
-	transfer := &protocol.TransferName{}
+	transfer := new(protocol.TransferName)
 	if err := proto.Unmarshal(rq_signed.Message, transfer); err != nil {
 		return nil, nil, err
 	}
@@ -249,54 +279,41 @@ func (dn *Dename) ValidateRequest(rq_bs []byte) ([]byte, *sgp.Entity, error) {
 	if err := new_pk.Parse(transfer.PublicKey); err != nil {
 		return nil, nil, err
 	}
-
-	old_pk := dn.Resolve(transfer.Name)
-	if old_pk == nil {
-		old_pk = new_pk
-	}
-	if _, err := old_pk.Verify(rq_bs, protocol.SIGN_TAG_TRANSFER); err != nil {
-		return nil, nil, err
-	}
-	// TODO: require a proof of freshnesh of the request
 	return transfer.Name, new_pk, nil
 }
 
 func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
-	shared_prng *prng.PRNG, round_id int64) []byte {
-	// everything here must be idempotent
-	var last_snapshot int64
-	if round_id != 0 {
-		err := dn.db.QueryRow(`SELECT snapshot from naming_snapshots
-			WHERE round = $1`, round_id-1).Scan(&last_snapshot)
-		if err != nil {
-			log.Fatalf("SELECT snapshot for round %d: %s", round_id-1, err)
+	shared_prng *prng.PRNG, round int64) []byte {
+	last_round, snapshot := int64(0), int64(0) // if ErrNoRows
+	err := dn.db.QueryRow(`SELECT round, snapshot from naming_snapshots
+		ORDER BY round DESC LIMIT 1`).Scan(&last_round, &snapshot)
+	if err != nil && err != sql.ErrNoRows {
+		log.Fatalf("SELECT latest snapshot: %s", err)
+	}
+	mapHandle, err := dn.merklemap.GetSnapshot(snapshot).OpenHandle()
+	if err != nil {
+		log.Fatalf("merklemap GetSnapshot(%d).OpenHandle(): %s", snapshot, err)
+	}
+	defer mapHandle.Close()
+
+	if last_round > round {
+		log.Fatalf("QueueProcessor(r%d) after done round %d", round, last_round)
+	} else if round == last_round { // already processed
+		if rootHash, err := mapHandle.GetRootHash(); err == nil {
+			return rootHash[:]
+		} else {
+			log.Fatalf("mapHandle.GetRootHash(): %s", err)
 		}
+	} else if last_round < round-1 {
+		log.Fatalf("Skipped rounds between %d and %d", last_round, round)
 	}
 
-	mapHandle, err := dn.merklemap.GetSnapshot(last_snapshot).OpenHandle()
+	rainbow_insert, err := dn.db.Prepare(`INSERT INTO rainbow(hash, preimage)
+		VALUES($1,$2)`)
 	if err != nil {
-		log.Fatalf("dn.merklemap.GetSnapshot(last_snapshot).OpenHandle(): %s", err)
+		log.Fatalf("PREPARE rainbow_insert: %s", err)
 	}
-
-	create, err := dn.db.Prepare(`INSERT INTO name_mapping(name) VALUES($1)`)
-	if err != nil {
-		log.Fatalf("PREPARE: INSERT name INTO name_mapping: %s", err)
-	}
-	defer create.Close()
-
-	assign, err := dn.db.Prepare(`UPDATE name_mapping
-		SET pubkey = $1 WHERE name = $2`)
-	if err != nil {
-		log.Fatalf("PREPARE: UPDATE pubkey WERE name: %s", err)
-	}
-	defer assign.Close()
-
-	unlock, err := dn.db.Prepare(`DELETE FROM name_locked
-		WHERE name = $1 AND request = $2`)
-	if err != nil {
-		log.Fatalf("PREPARE: DELETE FROM name_locked WHERE name = $1: %s", err)
-	}
-	defer unlock.Close()
+	defer rainbow_insert.Close()
 
 	peer_ids := make([]int64, 0, len(peer_rq_map))
 	for id := range peer_rq_map {
@@ -306,30 +323,31 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 	for i := range rand.New(shared_prng).Perm(len(peer_rq_map)) {
 		peer_id := peer_ids[i]
 		for _, rq_bs := range *peer_rq_map[peer_id] {
+			if name, _, err := NaiveParseRequest(rq_bs); err != nil {
+				log.Fatalf("%d accepted bad request: %s", peer_id, err)
+			} else if winner, already := name_modified[string(name)]; already {
+				log.Printf("Ignoring duplicate transfer of \"%s\" by %d after %d",
+					string(name), peer_id, winner)
+				continue
+			}
 			name, pk, err := dn.ValidateRequest(rq_bs)
 			if err != nil {
-				log.Fatalf("%d accepted a bad request: %s", peer_id, err)
-			}
-			if _, already := name_modified[string(name)]; already {
+				log.Printf("%d accepted INVALID request: %s", peer_id, err)
 				continue
 			}
 			name_modified[string(name)] = peer_id
-			err = mapHandle.Set(merklemap.Hash(name), merklemap.Hash(pk.Bytes))
+			pk_hash := merklemap.Hash(pk.Bytes)
+			err = mapHandle.Set(merklemap.Hash(name), pk_hash)
 			if err != nil {
 				log.Fatalf("mapHandle.Set(name,pk): %s", err)
 			}
-			_, err = create.Exec(name)
+			_, err = rainbow_insert.Exec(pk_hash[:], pk.Bytes)
 			if err != nil && !pgutil.IsError(err, pgutil.ErrUniqueViolation) {
-				log.Fatalf("QueueProcessor: create.Exec(name): %s", err)
-			}
-			if _, err = assign.Exec(pk.Bytes, name); err != nil {
-				log.Fatalf("QueueProcessor: create.Exec(name): %s", err)
-			}
-			if _, err = unlock.Exec(name, rq_bs); err != nil {
-				log.Fatalf("QueueProcessor: unlock.Exec(name): %s", err)
+				log.Fatalf("QueueProcessor: rainbow_insert.Exec(...): %s", err)
 			}
 		}
 	}
+
 	rootHash, err := mapHandle.GetRootHash()
 	if err != nil {
 		log.Fatalf("mapHandle.GetRootHash(): %s", err)
@@ -341,12 +359,18 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 	new_snapshot := newNaming.GetId()
 
 	_, err = dn.db.Exec(`INSERT INTO naming_snapshots(round, snapshot)
-		VALUES($1,$2)`, round_id, new_snapshot)
-	if err != nil && !pgutil.IsError(err, pgutil.ErrUniqueViolation) {
-		log.Fatalf("INSERT round %d snapshot %d: %s", round_id, new_snapshot, err)
+		VALUES($1,$2)`, round, new_snapshot)
+	if err != nil {
+		log.Fatalf("INSERT round %d snapshot %d: %s", round, new_snapshot, err)
 	}
 
+	dn.lockednames_mutex.Lock()
+	for name := range *peer_rq_map[dn.us.id] {
+		delete(dn.lockednames, string(name))
+	}
+	dn.lockednames_mutex.Unlock()
+
 	log.Printf("QueueProcessor: round %d with %d transfers: snapshot %d\n = %x",
-		round_id, len(name_modified), new_snapshot, *rootHash)
+		round, len(name_modified), new_snapshot, *rootHash)
 	return rootHash[:]
 }
