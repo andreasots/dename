@@ -43,10 +43,12 @@ func (dn *Dename) ListenForPeers() {
 	}
 	for {
 		conn, err := peer_lnr.AcceptTCP()
-		if err == nil {
-			conn.SetNoDelay(false)
-			go dn.PeerConnected(conn)
+		if err != nil {
+			log.Printf("peer_lnr.AcceptTCP(): %s", err)
+			continue
 		}
+		conn.SetNoDelay(false)
+		dn.PeerConnected(conn)
 	}
 }
 
@@ -148,11 +150,12 @@ func (peer *Peer) Send(msg_bs []byte) error {
 	if conn == nil {
 		return errors.New(fmt.Sprintf("SendToPeer: No connection to %v present", peer.id))
 	}
-	err := binary.Write(conn, binary.LittleEndian, uint16(len(msg_bs)))
+	buf := bytes.NewBuffer(make([]byte, 0, 2+len(msg_bs)))
+	err := binary.Write(buf, binary.LittleEndian, uint16(len(msg_bs)))
 	if err != nil {
-		return err
+		panic(err)
 	}
-	_, err = conn.Write(msg_bs)
+	_, err = conn.Write(append(buf.Bytes(), msg_bs...))
 	if err != nil {
 		return err
 	}
