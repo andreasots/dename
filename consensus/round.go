@@ -152,6 +152,9 @@ func (r *round) Process() {
 
 	<-r.afterKeys
 	log.Printf("round %v: got keys", r.id)
+	for _, rqs := range r.requests {
+		sort.Sort(ByteSlices(*rqs))
+	}
 	result := r.c.QueueProcessor(r.requests, r.shared_prng, r.id)
 	r.next.startHandlingCommitments()
 	r.next.startHandlingAcknowledgements()
