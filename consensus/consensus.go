@@ -88,7 +88,7 @@ func (c *Consensus) broadcast(msg *ConsensusMSG) {
 	for id, peer := range c.Peers {
 		if id != c.our_id {
 			if err := peer.Send(msg_bs); err != nil {
-				log.Printf("peer%d.Send(msg_bs{%d %s}): %s", id, *msg.Round, msgtypeName[msgtype(msg)], err)
+				log.Printf("peer%d.Send(msg_bs{%d %s} = %x): %s", id, *msg.Round, msgtypeName[msgtype(msg)], msg_bs, err)
 			}
 		}
 	}
@@ -224,7 +224,7 @@ func (c *Consensus) OnMessage(peer_id int64, msg_bs []byte) {
 	msg := new(ConsensusMSG)
 	err := proto.Unmarshal(msg_bs, msg)
 	if err != nil {
-		log.Fatalf("OnMessage(%d,_): proto.Unmarshal(msg_bs, msg): %s", peer_id, err)
+		log.Fatalf("OnMessage(%d,%x): proto.Unmarshal(msg_bs, msg): %s", peer_id, msg_bs, err)
 	}
 	if *msg.Server != peer_id {
 		log.Fatalf("%d tried to impersonate %d: %v", peer_id, *msg.Server, *msg)
