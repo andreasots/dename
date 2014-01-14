@@ -74,6 +74,7 @@ type Cfg struct {
 	}
 	Naming struct {
 		StartTime int64
+		Interval  string
 		File      string
 	}
 }
@@ -145,8 +146,13 @@ func main() {
 	}
 	sort.IntSlice(dn.peer_ids).Sort()
 
-	dn.c = consensus.NewConsensus(dn.db, &dn.our_sk, dn.us.id, dn.QueueProcessor,
-		time.Now(), 4*time.Second, consensus_peers, protocol.ConsensusSignTags)
+	t := time.Unix(cfg.Naming.StartTime, 0)
+	dt, err := time.ParseDuration(cfg.Naming.Interval)
+	if err != nil {
+		log.Fatal("Bad interval in configuration file")
+	}
+	dn.c = consensus.NewConsensus(dn.db, &dn.our_sk, dn.us.id,
+		dn.QueueProcessor, t, dt, consensus_peers, protocol.ConsensusSignTags)
 
 	go dn.ListenForPeers()
 	go dn.ConnectToPeers()
