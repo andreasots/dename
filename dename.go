@@ -19,6 +19,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sort"
 	"sync"
 	"time"
 )
@@ -44,6 +45,7 @@ type Dename struct {
 	us        *Peer
 	peers     map[int64]*Peer
 	addr2peer map[string]*Peer
+	peer_ids  []int
 
 	merklemap *merklemap.Map
 	c         *consensus.Consensus
@@ -135,10 +137,14 @@ func main() {
 		}
 	}
 
+	dn.peer_ids = make([]int, 0, len(dn.peers))
 	consensus_peers := make(map[int64]consensus.Peer_, len(dn.peers))
-	for k, v := range dn.peers {
-		consensus_peers[k] = v
+	for id, peer := range dn.peers {
+		consensus_peers[id] = peer
+		dn.peer_ids = append(dn.peer_ids, int(id))
 	}
+	sort.IntSlice(dn.peer_ids).Sort()
+
 	dn.c = consensus.NewConsensus(dn.db, &dn.our_sk, dn.us.id, dn.QueueProcessor,
 		time.Now(), 4*time.Second, consensus_peers, protocol.ConsensusSignTags)
 
@@ -284,6 +290,7 @@ func NaiveParseRequest(rq_bs []byte) ([]byte, *sgp.Entity, error) {
 
 func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 	shared_prng *prng.PRNG, round int64) []byte {
+	rnd := rand.New(shared_prng)
 	last_round, snapshot := int64(0), int64(0) // if ErrNoRows
 	err := dn.db.QueryRow(`SELECT round, snapshot from naming_snapshots
 		ORDER BY round DESC LIMIT 1`).Scan(&last_round, &snapshot)
@@ -315,30 +322,22 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 	}
 	defer rainbow_insert.Close()
 
-	peer_ids := make([]int64, 0, len(peer_rq_map))
-	for id := range peer_rq_map {
-		peer_ids = append(peer_ids, id)
-	}
 	name_modified := make(map[string]int64)
-	for _, i := range rand.New(shared_prng).Perm(len(peer_rq_map)) {
-		peer_id := peer_ids[i]
+	for _, i := range rnd.Perm(len(peer_rq_map)) {
+		peer_id := int64(dn.peer_ids[i])
 		for _, rq_bs := range *peer_rq_map[peer_id] {
-			if name, _, err := NaiveParseRequest(rq_bs); err != nil {
-				log.Fatalf("%d accepted bad request: %s", peer_id, err)
-			} else if winner, already := name_modified[string(name)]; already {
-				log.Printf("Ignoring duplicate transfer of \"%s\" by %d after %d",
-					string(name), peer_id, winner)
-				continue
-			}
 			name, pk, err := dn.ValidateRequest(rq_bs)
 			if err != nil {
-				log.Printf("%d accepted INVALID transfer of \"%s\": %s", peer_id, string(name), err)
+				log.Printf("qpr: invalid transfer of \"%s\" by %d (%s)", string(name), peer_id, err)
+				continue
+			} else if winner, already := name_modified[string(name)]; already {
+				log.Printf("qpr: duplicate transfer of \"%s\" by %d after %d",
+					string(name), peer_id, winner)
 				continue
 			}
 			name_modified[string(name)] = peer_id
 			pk_hash := merklemap.Hash(pk.Bytes)
-			err = mapHandle.Set(merklemap.Hash(name), pk_hash)
-			if err != nil {
+			if err = mapHandle.Set(merklemap.Hash(name), pk_hash); err != nil {
 				log.Fatalf("mapHandle.Set(name,pk): %s", err)
 			}
 			_, err = rainbow_insert.Exec(pk_hash[:], pk.Bytes)
@@ -356,15 +355,12 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 	if err != nil {
 		log.Fatalf("mapHandle.FinishUpdate(): %s", err)
 	}
-	new_snapshot := newNaming.GetId()
 
-	log.Printf("QueueProcessor: round %d with %d transfers: snapshot %d\n = %x",
-		round, len(name_modified), new_snapshot, *rootHash)
-
+	log.Printf("#%d = %x", round, *rootHash)
 	_, err = dn.db.Exec(`INSERT INTO naming_snapshots(round, snapshot)
-		VALUES($1,$2)`, round, new_snapshot)
+		VALUES($1,$2)`, round, newNaming.GetId())
 	if err != nil {
-		log.Fatalf("INSERT round %d snapshot %d: %s", round, new_snapshot, err)
+		log.Fatalf("INSERT round %d snapshot %d: %s", round, newNaming.GetId(), err)
 	}
 
 	dn.lockednames_mutex.Lock()
