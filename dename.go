@@ -239,10 +239,10 @@ func (dn *Dename) HandleClientTransfer(rq_bs []byte) {
 	}
 }
 
-func (dn *Dename) ValidateRequest(rq_bs []byte) ([]byte, *sgp.Entity, error) {
-	name, new_pk, err := NaiveParseRequest(rq_bs)
+func (dn *Dename) ValidateRequest(rq_bs []byte) (name []byte, new_pk *sgp.Entity, err error) {
+	name, new_pk, err = NaiveParseRequest(rq_bs)
 	if err != nil {
-		return nil, nil, err
+		return
 	}
 	snapshot := int64(0) // if ErrNoRows
 	err = dn.db.QueryRow(`SELECT snapshot from naming_snapshots
@@ -259,8 +259,8 @@ func (dn *Dename) ValidateRequest(rq_bs []byte) ([]byte, *sgp.Entity, error) {
 	if old_pk == nil {
 		old_pk = new_pk
 	}
-	if _, err := old_pk.Verify(rq_bs, protocol.SIGN_TAG_TRANSFER); err != nil {
-		return nil, nil, err
+	if _, err = old_pk.Verify(rq_bs, protocol.SIGN_TAG_TRANSFER); err != nil {
+		return
 	}
 	// TODO: require a proof of freshness of the request
 	return name, new_pk, nil
@@ -320,7 +320,7 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 		peer_ids = append(peer_ids, id)
 	}
 	name_modified := make(map[string]int64)
-	for i := range rand.New(shared_prng).Perm(len(peer_rq_map)) {
+	for _, i := range rand.New(shared_prng).Perm(len(peer_rq_map)) {
 		peer_id := peer_ids[i]
 		for _, rq_bs := range *peer_rq_map[peer_id] {
 			if name, _, err := NaiveParseRequest(rq_bs); err != nil {
@@ -332,7 +332,7 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 			}
 			name, pk, err := dn.ValidateRequest(rq_bs)
 			if err != nil {
-				log.Printf("%d accepted INVALID request: %s", peer_id, err)
+				log.Printf("%d accepted INVALID transfer of \"%s\": %s", peer_id, string(name), err)
 				continue
 			}
 			name_modified[string(name)] = peer_id
@@ -358,6 +358,9 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 	}
 	new_snapshot := newNaming.GetId()
 
+	log.Printf("QueueProcessor: round %d with %d transfers: snapshot %d\n = %x",
+		round, len(name_modified), new_snapshot, *rootHash)
+
 	_, err = dn.db.Exec(`INSERT INTO naming_snapshots(round, snapshot)
 		VALUES($1,$2)`, round, new_snapshot)
 	if err != nil {
@@ -365,12 +368,13 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 	}
 
 	dn.lockednames_mutex.Lock()
-	for name := range *peer_rq_map[dn.us.id] {
-		delete(dn.lockednames, string(name))
+	for _, rq_bs := range *peer_rq_map[dn.us.id] {
+		if name, _, err := NaiveParseRequest(rq_bs); err == nil {
+			delete(dn.lockednames, string(name))
+		} else {
+			panic(err)
+		}
 	}
 	dn.lockednames_mutex.Unlock()
-
-	log.Printf("QueueProcessor: round %d with %d transfers: snapshot %d\n = %x",
-		round, len(name_modified), new_snapshot, *rootHash)
 	return rootHash[:]
 }
