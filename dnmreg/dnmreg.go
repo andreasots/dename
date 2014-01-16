@@ -44,6 +44,10 @@ func main() {
 		log.Fatal(err)
 	}
 	defer conn.Close()
+	_, err = conn.Write([]byte{byte(len(msg_bs) & 0xff), (byte(len(msg_bs)>>8) & 0xff)})
+	if err != nil {
+		log.Fatal(err)
+	}
 	_, err = conn.Write(msg_bs)
 	if err != nil {
 		log.Fatal(err)

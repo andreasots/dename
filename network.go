@@ -16,8 +16,8 @@ import (
 const S2S_PORT = "6362"
 const C2S_PORT = "6263"
 
-func (dn *Dename) ListenForClients() {
-	client_lnr, err := net.Listen("tcp", dn.us.addr+":"+C2S_PORT)
+func (dn *Dename) ListenForClients(addr string) {
+	client_lnr, err := net.Listen("tcp", addr+":"+C2S_PORT)
 	if err != nil {
 		log.Fatal(err)
 	}

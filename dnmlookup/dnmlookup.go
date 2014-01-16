@@ -11,7 +11,7 @@ func main() {
 		log.Fatal("USAGE: ", os.Args[0], " NAME")
 	}
 
-	dnmc, err := dnmclient.New("dnmlookup.cfg")
+	dnmc, err := dnmclient.New("dnmlookup.cfg", nil)
 	if err != nil {
 		panic(err)
 	}

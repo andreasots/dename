@@ -6,6 +6,7 @@ import (
 	"code.google.com/p/goprotobuf/proto"
 	"database/sql"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"github.com/andres-erbsen/dename/consensus"
 	"github.com/andres-erbsen/dename/pgutil"
@@ -13,7 +14,7 @@ import (
 	"github.com/andres-erbsen/dename/protocol"
 	"github.com/andres-erbsen/sgp"
 	"github.com/daniel-ziegler/merklemap"
-	"io/ioutil"
+	"io"
 	"log"
 	"math/rand"
 	"net"
@@ -76,6 +77,9 @@ type Cfg struct {
 		StartTime int64
 		Interval  string
 		File      string
+	}
+	Clients struct {
+		Host string
 	}
 }
 
@@ -156,13 +160,21 @@ func main() {
 
 	go dn.ListenForPeers()
 	go dn.ConnectToPeers()
-	go dn.ListenForClients()
+	if cfg.Clients.Host != "" {
+		go dn.ListenForClients(cfg.Clients.Host)
+	}
 	dn.c.Run()
 }
 
 func (dn *Dename) HandleClient(conn net.Conn) {
 	defer conn.Close()
-	msg_bs, err := ioutil.ReadAll(conn)
+	var sz uint16
+	err := binary.Read(conn, binary.LittleEndian, &sz)
+	if err != nil {
+		return
+	}
+	msg_bs := make([]byte, sz)
+	_, err = io.ReadFull(conn, msg_bs)
 	if err != nil {
 		return
 	}

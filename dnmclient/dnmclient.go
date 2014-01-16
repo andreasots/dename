@@ -1,18 +1,18 @@
 package dnmclient
 
 import (
+	"bytes"
+	"code.google.com/p/gcfg"
+	"code.google.com/p/go.net/proxy"
 	"code.google.com/p/goprotobuf/proto"
+	"encoding/base64"
+	"encoding/binary"
+	"errors"
 	"github.com/andres-erbsen/dename/consensus"
 	"github.com/andres-erbsen/dename/protocol"
 	"github.com/andres-erbsen/sgp"
 	"github.com/daniel-ziegler/merklemap"
-	// "github.com/andres-erbsen/sgp"
-	"bytes"
-	"code.google.com/p/gcfg"
-	"encoding/base64"
-	"errors"
 	"io/ioutil"
-	"net"
 )
 
 type Cfg struct {
@@ -26,9 +26,10 @@ type DenameClient struct {
 	cfg      Cfg
 	peer_pks []*sgp.Entity
 	server   string
+	dialer   proxy.Dialer
 }
 
-func New(cfgfile string) (dnmc *DenameClient, err error) {
+func New(cfgfile string, proxy_dialer proxy.Dialer) (dnmc *DenameClient, err error) {
 	dnmc = new(DenameClient)
 	err = gcfg.ReadFileInto(&dnmc.cfg, cfgfile)
 	if err != nil {
@@ -51,18 +52,21 @@ func New(cfgfile string) (dnmc *DenameClient, err error) {
 		}
 		i++
 	}
+	if proxy_dialer != nil {
+		dnmc.dialer = proxy_dialer
+	} else {
+		dnmc.dialer = proxy.FromEnvironment()
+	}
 	return dnmc, nil
 }
 
 func (dnmc *DenameClient) Lookup(name []byte) (entity *sgp.Entity, err error) {
-	for _, peer := range dnmc.cfg.Peer {
-		entity, err = dnmc.LookupFrom(peer.Host, name)
-		if err == nil {
-			if entity == nil {
-				panic(entity)
-			}
-			return
+	entity, err = dnmc.LookupFrom(dnmc.server, name)
+	if err == nil {
+		if entity == nil {
+			panic("entity == nil && err == nil")
 		}
+		return
 	}
 	return nil, errors.New("Lookup failed")
 }
@@ -73,21 +77,21 @@ func (dnmc *DenameClient) LookupFrom(host string, name []byte) (entity *sgp.Enti
 		return
 	}
 
-	tcpAddr, err := net.ResolveTCPAddr("tcp", host+":6263")
-	if err != nil {
-		return
-	}
-	conn, err := net.DialTCP("tcp", nil, tcpAddr)
+	conn, err := dnmc.dialer.Dial("tcp", host+":6263")
 	if err != nil {
 		return
 	}
 	defer conn.Close()
 
+	err = binary.Write(conn, binary.LittleEndian, uint16(len(query_bs)))
+	if err != nil {
+		return
+	}
+
 	_, err = conn.Write(query_bs)
 	if err != nil {
 		return
 	}
-	conn.CloseWrite()
 
 	response_bs, err := ioutil.ReadAll(conn)
 	if err != nil {
@@ -147,11 +151,15 @@ func (dnmc *DenameClient) Transfer(sk *sgp.SecretKey, name string, pk *sgp.Entit
 		return
 	}
 
-	conn, err := net.Dial("tcp", dnmc.server+":6263")
+	conn, err := dnmc.dialer.Dial("tcp", dnmc.server+":6263")
 	if err != nil {
 		return
 	}
 	defer conn.Close()
+	err = binary.Write(conn, binary.LittleEndian, uint16(len(request_bs)))
+	if err != nil {
+		return
+	}
 	_, err = conn.Write(request_bs)
 	return
 }
