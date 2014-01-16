@@ -2,29 +2,23 @@ package main
 
 import (
 	"github.com/andres-erbsen/dename/dnmclient"
-	"log"
 	"os"
 )
 
+func barf(s string, c int) {
+	os.Stderr.Write([]byte(s))
+	os.Exit(c)
+}
+
 func main() {
 	if len(os.Args) != 2 {
-		log.Fatal("USAGE: ", os.Args[0], " NAME")
+		barf("USAGE: "+os.Args[0]+" NAME\n", 2)
 	}
-
-	dnmc, err := dnmclient.New("dnmlookup.cfg", nil)
+	pk, err := dnmclient.New(nil, "", nil).Lookup(os.Args[1])
 	if err != nil {
-		panic(err)
+		barf(err.Error(), 1)
 	}
-
-	pk, err := dnmc.Lookup([]byte(os.Args[1]))
-	if err != nil {
-		os.Stderr.Write([]byte(err.Error() + "\n"))
-		os.Exit(1)
-	}
-
-	_, err = os.Stdout.Write(pk.Bytes)
-	if err != nil {
-		os.Stderr.Write([]byte(err.Error() + "\n"))
-		os.Exit(1)
+	if _, err = os.Stdout.Write(pk.Bytes); err != nil {
+		barf(err.Error(), 1)
 	}
 }

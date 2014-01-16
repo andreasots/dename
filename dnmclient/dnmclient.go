@@ -23,61 +23,80 @@ type Cfg struct {
 }
 
 type DenameClient struct {
-	cfg      Cfg
-	peer_pks []*sgp.Entity
-	server   string
-	dialer   proxy.Dialer
+	verifiers []*sgp.Entity
+	server    string
+	dialer    proxy.Dialer
 }
 
-func New(cfgfile string, proxy_dialer proxy.Dialer) (dnmc *DenameClient, err error) {
-	dnmc = new(DenameClient)
-	err = gcfg.ReadFileInto(&dnmc.cfg, cfgfile)
+const DefaultHostname = "dename.xvm.mit.edu"
+const PilotVerifier_b64 = `Cl0KKAgBEAAYAiIgPG0f8Z363+bqSk1VfzDAaQbD7ggPM2MvAo8P6o8Xm7gKJggGGAEiIBYgQcQMqQlL6/IH0GL0PHdRjCu1oV+M4hb7Hdxa/+YLEPCa1pYFGICangEiQGQ2D0X+BPOX4XNyOco6BbksfBUF2DfegUaKYXnXxGnvyoh7AoAn7YeeSRxcqtMMhSJatwBG3hO+61u7LX5p9wk==`
+
+var PilotVerifier *sgp.Entity
+var DefaultVerifiers []*sgp.Entity
+
+func init() {
+	PilotVerifier := new(sgp.Entity)
+	pk_bs, err := base64.StdEncoding.DecodeString(PilotVerifier_b64)
+	if err != nil {
+		panic(err)
+	}
+	PilotVerifier.Parse(pk_bs)
+	DefaultVerifiers = []*sgp.Entity{PilotVerifier}
+}
+
+func NewFromFile(cfgfile string, proxy_dialer proxy.Dialer) (dnmc *DenameClient, err error) {
+	var cfg Cfg
+	err = gcfg.ReadFileInto(&cfg, cfgfile)
 	if err != nil {
 		return nil, err
 	}
-	dnmc.peer_pks = make([]*sgp.Entity, len(dnmc.cfg.Peer))
-	i := 0
-	for _, peer := range dnmc.cfg.Peer {
-		if dnmc.server == "" {
-			dnmc.server = peer.Host
+	verifiers := make([]*sgp.Entity, 0, len(cfg.Peer))
+	var server string
+	for _, peer := range cfg.Peer {
+		if server == "" {
+			server = peer.Host
 		}
 		pk_bytes, err := base64.StdEncoding.DecodeString(peer.PublicKey)
 		if err != nil {
 			return nil, err
 		}
-		dnmc.peer_pks[i] = new(sgp.Entity)
-		err = dnmc.peer_pks[i].Parse(pk_bytes)
+		e := new(sgp.Entity)
+		err = e.Parse(pk_bytes)
 		if err != nil {
 			return nil, err
 		}
-		i++
+		verifiers = append(verifiers, e)
+	}
+	return New(verifiers, server, proxy_dialer), nil
+}
+
+func New(pks []*sgp.Entity, server string, proxy_dialer proxy.Dialer) *DenameClient {
+	dnmc := new(DenameClient)
+	if pks != nil {
+		dnmc.verifiers = pks
+	} else {
+		dnmc.verifiers = DefaultVerifiers
+	}
+	if server != "" {
+		dnmc.server = server
+	} else {
+		dnmc.server = DefaultHostname
 	}
 	if proxy_dialer != nil {
 		dnmc.dialer = proxy_dialer
 	} else {
 		dnmc.dialer = proxy.FromEnvironment()
 	}
-	return dnmc, nil
+	return dnmc
 }
 
-func (dnmc *DenameClient) Lookup(name []byte) (entity *sgp.Entity, err error) {
-	entity, err = dnmc.LookupFrom(dnmc.server, name)
-	if err == nil {
-		if entity == nil {
-			panic("entity == nil && err == nil")
-		}
-		return
-	}
-	return nil, errors.New("Lookup failed")
-}
-
-func (dnmc *DenameClient) LookupFrom(host string, name []byte) (entity *sgp.Entity, err error) {
-	query_bs, err := proto.Marshal(&protocol.C2SMessage{Lookup: name})
+func (dnmc *DenameClient) roundTrip(msg *protocol.C2SMessage) (response []byte, err error) {
+	query_bs, err := proto.Marshal(msg)
 	if err != nil {
 		return
 	}
 
-	conn, err := dnmc.dialer.Dial("tcp", host+":6263")
+	conn, err := dnmc.dialer.Dial("tcp", dnmc.server+":6263")
 	if err != nil {
 		return
 	}
@@ -88,48 +107,43 @@ func (dnmc *DenameClient) LookupFrom(host string, name []byte) (entity *sgp.Enti
 		return
 	}
 
-	_, err = conn.Write(query_bs)
-	if err != nil {
+	if _, err = conn.Write(query_bs); err != nil {
 		return
 	}
+	return ioutil.ReadAll(conn)
+}
 
-	response_bs, err := ioutil.ReadAll(conn)
+func (dnmc *DenameClient) Lookup(name string) (entity *sgp.Entity, err error) {
+	response_bs, err := dnmc.roundTrip(&protocol.C2SMessage{Lookup: []byte(name)})
 	if err != nil {
 		return
 	}
 	response := new(protocol.LookupResponse)
-	err = proto.Unmarshal(response_bs, response)
-	if err != nil {
+	if err = proto.Unmarshal(response_bs, response); err != nil {
 		return
 	}
 
-	root_signed := new(sgp.Signed)
-	err = proto.Unmarshal(response.Root, root_signed)
-	if err != nil {
-		return
-	}
-	for _, pk := range dnmc.peer_pks {
-		if !pk.VerifyPb(root_signed, protocol.SIGN_TAG_PUBLISH) {
-			return nil, errors.New("Cannot verify signature")
+	var verified_result_bs []byte
+	for _, pk := range dnmc.verifiers {
+		verified_result_bs, err = pk.Verify(response.Root, protocol.SIGN_TAG_PUBLISH)
+		if err != nil {
+			return
 		}
+	}
+	verified_result := new(consensus.ConsensusResult)
+	if err = proto.Unmarshal(verified_result_bs, verified_result); err != nil {
+		return
 	}
 
 	path := new(merklemap.MerklePath)
-	err = proto.Unmarshal(response.Path, path)
-	if err != nil {
-		return
-	}
-
-	rootdata := new(consensus.ConsensusResult)
-	err = proto.Unmarshal(root_signed.Message, rootdata)
-	if err != nil {
+	if err = proto.Unmarshal(response.Path, path); err != nil {
 		return
 	}
 
 	pk_hash := merklemap.Hash(response.PublicKey)
-	name_hash := merklemap.Hash(name)
-	perceived_root_hash := path.ComputeRootHash(name_hash, pk_hash)
-	if !bytes.Equal(rootdata.Result, perceived_root_hash) {
+	name_hash := merklemap.Hash([]byte(name))
+	perceived_root := path.ComputeRootHash(name_hash, pk_hash)
+	if !bytes.Equal(verified_result.Result, perceived_root) {
 		return nil, errors.New("Failed to reproduce root hash")
 	}
 
@@ -138,32 +152,29 @@ func (dnmc *DenameClient) LookupFrom(host string, name []byte) (entity *sgp.Enti
 	return
 }
 
+func Lookup(name string) (*sgp.Entity, error) {
+	return New(nil, "", nil).Lookup(name)
+}
+
 func (dnmc *DenameClient) Transfer(sk *sgp.SecretKey, name string, pk *sgp.Entity) (err error) {
 	details := &protocol.TransferName{Name: []byte(name), PublicKey: pk.Bytes}
 	details_bs, err := proto.Marshal(details)
 	if err != nil {
 		return
 	}
-
 	request := sk.Sign(details_bs, protocol.SIGN_TAG_TRANSFER)
-	request_bs, err := proto.Marshal(&protocol.C2SMessage{TransferName: request})
-	if err != nil {
-		return
-	}
-
-	conn, err := dnmc.dialer.Dial("tcp", dnmc.server+":6263")
-	if err != nil {
-		return
-	}
-	defer conn.Close()
-	err = binary.Write(conn, binary.LittleEndian, uint16(len(request_bs)))
-	if err != nil {
-		return
-	}
-	_, err = conn.Write(request_bs)
+	_, err = dnmc.roundTrip(&protocol.C2SMessage{TransferName: request})
 	return
 }
 
-func (dnmc *DenameClient) Register(sk *sgp.SecretKey, name string) (err error) {
+func Transfer(sk *sgp.SecretKey, name string, pk *sgp.Entity) error {
+	return New(nil, "", nil).Transfer(sk, name, pk)
+}
+
+func (dnmc *DenameClient) Register(sk *sgp.SecretKey, name string) error {
 	return dnmc.Transfer(sk, name, sk.Entity)
+}
+
+func Register(sk *sgp.SecretKey, name string) error {
+	return New(nil, "", nil).Transfer(sk, name, sk.Entity)
 }
