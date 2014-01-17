@@ -449,9 +449,11 @@ func (r *round) startHandlingPublishes() {
 		}
 		rs, err := r.c.db.Exec(`UPDATE rounds SET signed_result = $1 WHERE id = $2
 				AND signed_result IS NULL`, signed_result_bs, r.id)
-		n, _ := rs.RowsAffected()
-		if err != nil || n > 1 {
-			log.Fatalf("UPDATE rounds SET signed_result (%d rows): %s", n, err)
+		if err != nil {
+			log.Fatalf("UPDATE rounds SET signed_result: %s", err)
+		}
+		if n, _ := rs.RowsAffected(); n > 1 {
+			log.Fatalf("UPDATE rounds SET signed_result affected %d rows", n)
 		}
 		close(r.afterPublishes)
 	}()
