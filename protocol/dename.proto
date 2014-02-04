@@ -5,13 +5,18 @@ message TransferName {
         required bytes name = 2;
 }
 
+message AcceptTransfer {
+        required bytes transfer = 1;
+        required bytes fresh_root = 2;
+}
+
 message C2SMessage {
-	optional bytes transfer_name = 1;
+	optional bytes transfer = 1;
 	optional bytes lookup = 2;
 }
 
 message LookupResponse {
 	required bytes root = 1;
-	required bytes path = 2;
-	required bytes public_key = 3;
+	optional bytes path = 2;
+	optional bytes public_key = 3;
 }

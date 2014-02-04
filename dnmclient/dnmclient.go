@@ -156,25 +156,61 @@ func Lookup(name string) (*sgp.Entity, error) {
 	return New(nil, "", nil).Lookup(name)
 }
 
-func (dnmc *DenameClient) Transfer(sk *sgp.SecretKey, name string, pk *sgp.Entity) (err error) {
-	details := &protocol.TransferName{Name: []byte(name), PublicKey: pk.Bytes}
-	details_bs, err := proto.Marshal(details)
+func (dnmc *DenameClient) Transfer(sk *sgp.SecretKey, name string, pk *sgp.Entity) []byte {
+	transfer := &protocol.TransferName{Name: []byte(name), PublicKey: pk.Bytes}
+	transfer_bs, err := proto.Marshal(transfer)
 	if err != nil {
-		return
+		panic(err)
 	}
-	request := sk.Sign(details_bs, protocol.SIGN_TAG_TRANSFER)
-	_, err = dnmc.roundTrip(&protocol.C2SMessage{TransferName: request})
-	return
+	ret := sk.Sign(transfer_bs, protocol.SIGN_TAG_TRANSFER)
+	return ret
 }
 
-func Transfer(sk *sgp.SecretKey, name string, pk *sgp.Entity) error {
+func Transfer(sk *sgp.SecretKey, name string, pk *sgp.Entity) []byte {
 	return New(nil, "", nil).Transfer(sk, name, pk)
 }
 
+func (dnmc *DenameClient) Accept(sk *sgp.SecretKey, signed_transfer []byte) (err error) {
+	// get a fresh root to use as proof of freshness of the signed_transfer
+	response_bs, err := dnmc.roundTrip(&protocol.C2SMessage{Lookup: []byte("")})
+	if err != nil {
+		return
+	}
+	response := new(protocol.LookupResponse)
+	if err = proto.Unmarshal(response_bs, response); err != nil {
+		return
+	}
+
+	var verified_result_bs []byte
+	for _, pk := range dnmc.verifiers {
+		verified_result_bs, err = pk.Verify(response.Root, protocol.SIGN_TAG_PUBLISH)
+		if err != nil {
+			return
+		}
+	}
+	verified_result := new(consensus.ConsensusResult)
+	if err = proto.Unmarshal(verified_result_bs, verified_result); err != nil {
+		return
+	}
+
+	accept := &protocol.AcceptTransfer{Transfer: signed_transfer, FreshRoot: verified_result.Result}
+	accept_bs, err := proto.Marshal(accept)
+	if err != nil {
+		panic(err)
+	}
+	signed_accept_bs := sk.Sign(accept_bs, protocol.SIGN_TAG_ACCEPT)
+	_, err = dnmc.roundTrip(&protocol.C2SMessage{Transfer: signed_accept_bs})
+	return
+}
+
+func Accept(sk *sgp.SecretKey, signed_transfer []byte) error {
+	return New(nil, "", nil).Accept(sk, signed_transfer)
+}
+
 func (dnmc *DenameClient) Register(sk *sgp.SecretKey, name string) error {
-	return dnmc.Transfer(sk, name, sk.Entity)
+	return dnmc.Accept(sk, dnmc.Transfer(sk, name, sk.Entity))
 }
 
 func Register(sk *sgp.SecretKey, name string) error {
-	return New(nil, "", nil).Transfer(sk, name, sk.Entity)
+	return New(nil, "", nil).Register(sk, name)
 }

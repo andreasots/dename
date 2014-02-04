@@ -44,4 +44,4 @@ do
 	cat $tmp_peer_config >> $dir/$i/dename.cfg
 done
 
-grep --after-context=999999 peer $dir/1/dename.cfg > dnmlookup/dnmlookup.cfg
+grep --after-context=999999 peer $dir/1/dename.cfg > $dir/dnmlookup.cfg

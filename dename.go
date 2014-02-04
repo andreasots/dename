@@ -53,6 +53,8 @@ type Dename struct {
 
 	lockednames_mutex sync.Mutex
 	lockednames       map[string]struct{}
+
+	freshnessThreshold int64
 }
 
 type Cfg struct {
@@ -79,7 +81,8 @@ type Cfg struct {
 		File      string
 	}
 	Clients struct {
-		Host string
+		Host               string
+		FreshnessThreshold int64
 	}
 }
 
@@ -114,6 +117,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("merklemap.Open(cfg.Naming.File): %s", err)
 	}
+	dn.freshnessThreshold = cfg.Clients.FreshnessThreshold
 
 	for id_str, peercfg := range cfg.Peer {
 		peer := &Peer{pk: new(sgp.Entity)}
@@ -186,8 +190,8 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 	switch {
 	case msg.Lookup != nil:
 		dn.HandleClientLookup(conn, msg.Lookup)
-	case msg.TransferName != nil:
-		dn.HandleClientTransfer(msg.TransferName)
+	case msg.Transfer != nil:
+		dn.HandleClientTransfer(msg.Transfer)
 	}
 }
 
@@ -210,15 +214,16 @@ func (dn *Dename) HandleClientLookup(conn net.Conn, name []byte) {
 	}
 	defer mapHandle.Close()
 	pk, path := dn.Resolve(mapHandle, name)
-	if pk == nil {
-		return
-	}
-	path_bs, err := proto.Marshal(path)
-	if err != nil {
-		panic(err)
+	var pk_bs, path_bs []byte
+	if pk != nil {
+		pk_bs = pk.Bytes
+		path_bs, err = proto.Marshal(path)
+		if err != nil {
+			panic(err)
+		}
 	}
 	response_bs, err := proto.Marshal(&protocol.LookupResponse{
-		Root: signed_root, Path: path_bs, PublicKey: pk.Bytes})
+		Root: signed_root, Path: path_bs, PublicKey: pk_bs})
 	if err != nil {
 		panic(err)
 	}
@@ -264,7 +269,7 @@ func (dn *Dename) HandleClientTransfer(rq_bs []byte) {
 }
 
 func (dn *Dename) ValidateRequest(rq_bs []byte) (name []byte, new_pk *sgp.Entity, err error) {
-	name, new_pk, err = NaiveParseRequest(rq_bs)
+	name, new_pk, freshRoot, err := NaiveParseRequest(rq_bs)
 	if err != nil {
 		return
 	}
@@ -280,30 +285,53 @@ func (dn *Dename) ValidateRequest(rq_bs []byte) (name []byte, new_pk *sgp.Entity
 	}
 	defer mapHandle.Close()
 	old_pk, _ := dn.Resolve(mapHandle, name)
-	if old_pk == nil {
-		old_pk = new_pk
+	if old_pk != nil {
+		accept_bs, err := new_pk.Verify(rq_bs, protocol.SIGN_TAG_ACCEPT)
+		if err != nil {
+			return nil, nil, err
+		}
+		accept := new(protocol.AcceptTransfer)
+		if err := proto.Unmarshal(accept_bs, accept); err != nil {
+			return nil, nil, err
+		}
+		if _, err = old_pk.Verify(accept.Transfer, protocol.SIGN_TAG_TRANSFER); err != nil {
+			return nil, nil, err
+		}
 	}
-	if _, err = old_pk.Verify(rq_bs, protocol.SIGN_TAG_TRANSFER); err != nil {
-		return
+	var _one int64
+	err = dn.db.QueryRow(`SELECT 1 FROM rounds WHERE id >= ((SELECT id FROM
+		rounds WHERE signed_result IS NOT NULL ORDER BY id DESC LIMIT 1) - $1)
+		AND result = $2`, dn.freshnessThreshold, freshRoot).Scan(&_one)
+	if err != nil && err != sql.ErrNoRows {
+		log.Fatalf("SELECT latest snapshot: %s", err)
+	} else if err == sql.ErrNoRows {
+		return nil, nil, err
 	}
-	// TODO: require a proof of freshness of the request
 	return name, new_pk, nil
 }
 
-func NaiveParseRequest(rq_bs []byte) ([]byte, *sgp.Entity, error) {
-	rq_signed := new(sgp.Signed)
-	if err := proto.Unmarshal(rq_bs, rq_signed); err != nil {
-		return nil, nil, err
+func NaiveParseRequest(accept_signed_bs []byte) ([]byte, *sgp.Entity, []byte, error) {
+	accept_signed := new(sgp.Signed)
+	if err := proto.Unmarshal(accept_signed_bs, accept_signed); err != nil {
+		return nil, nil, nil, err
+	}
+	accept := new(protocol.AcceptTransfer)
+	if err := proto.Unmarshal(accept_signed.Message, accept); err != nil {
+		return nil, nil, nil, err
+	}
+	transfer_signed := new(sgp.Signed)
+	if err := proto.Unmarshal(accept.Transfer, transfer_signed); err != nil {
+		return nil, nil, nil, err
 	}
 	transfer := new(protocol.TransferName)
-	if err := proto.Unmarshal(rq_signed.Message, transfer); err != nil {
-		return nil, nil, err
+	if err := proto.Unmarshal(transfer_signed.Message, transfer); err != nil {
+		return nil, nil, nil, err
 	}
 	new_pk := new(sgp.Entity)
 	if err := new_pk.Parse(transfer.PublicKey); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return transfer.Name, new_pk, nil
+	return transfer.Name, new_pk, accept.FreshRoot, nil
 }
 
 func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
@@ -383,7 +411,7 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 
 	dn.lockednames_mutex.Lock()
 	for _, rq_bs := range *peer_rq_map[dn.us.id] {
-		if name, _, err := NaiveParseRequest(rq_bs); err == nil {
+		if name, _, _, err := NaiveParseRequest(rq_bs); err == nil {
 			delete(dn.lockednames, string(name))
 		} else {
 			panic(err)

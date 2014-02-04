@@ -391,6 +391,14 @@ func (r *round) Publish(result []byte) {
 	if err != nil {
 		panic(err)
 	}
+	rs, err := r.c.db.Exec(`UPDATE rounds SET result = $1 WHERE id = $2
+			AND result IS NULL`, result, r.id)
+	if err != nil {
+		log.Fatalf("UPDATE rounds SET result: %s", err)
+	}
+	if n, _ := rs.RowsAffected(); n > 1 {
+		log.Fatalf("UPDATE rounds SET result affected %d rows", n)
+	}
 	r.c.broadcast(&ConsensusMSG{Server: &r.c.our_id,
 		Round: &r.id, Publish: signed_bs})
 	close(r.afterWeHavePublished)

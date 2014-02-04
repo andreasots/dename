@@ -16,6 +16,7 @@ func (c *Consensus) createTables() {
 		id bigserial not null primary key,
 		our_key bytea not null,
 		close_time bigint not null,
+		result bytea,
 		signed_result bytea);`)
 	if err != nil {
 		log.Fatal("Cannot create table rounds: ", err)

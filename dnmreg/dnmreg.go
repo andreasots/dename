@@ -3,26 +3,33 @@ package main
 import (
 	"github.com/andres-erbsen/dename/dnmclient"
 	"github.com/andres-erbsen/sgp"
-	"io/ioutil"
 	"log"
 	"os"
 )
 
 func main() {
-	if len(os.Args) != 4 {
-		log.Fatal("USAGE: ", os.Args[0], " FROM.sk NAME TO.pk")
+	if len(os.Args) != 3 && len(os.Args) != 4 {
+		log.Fatal("USAGE: ", os.Args[0], " FROM.sk NAME [TO.sk]")
 	}
-	sk, err := sgp.LoadSecretKeyFromFile(os.Args[1])
+	from, err := sgp.LoadSecretKeyFromFile(os.Args[1])
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	pk_bs, err := ioutil.ReadFile(os.Args[3])
-	pk := new(sgp.Entity)
-	if err = pk.Parse(pk_bs); err != nil {
+	to := from
+	if len(os.Args) == 4 {
+		to, err = sgp.LoadSecretKeyFromFile(os.Args[3])
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	c, err := dnmclient.NewFromFile("run/dnmlookup.cfg", nil)
+	if err != nil {
 		log.Fatal(err)
 	}
-	if err = dnmclient.Transfer(&sk, os.Args[2], pk); err != nil {
+
+	transfer := c.Transfer(&from, os.Args[2], to.Entity)
+	if err := c.Accept(&to, transfer); err != nil {
 		log.Fatal(err)
 	}
 }
