@@ -11,12 +11,25 @@ message AcceptTransfer {
 }
 
 message C2SMessage {
-	optional bytes transfer = 1;
-	optional bytes lookup = 2;
+	optional bool get_root = 1;
+	optional bytes transfer = 2;
+	optional bytes lookup = 3;
+	optional bool get_freshness = 4;
+}
+
+message S2CMessage {
+	optional bytes root = 1;
+	optional LookupResponse lookup_response = 3;
+	repeated bytes freshness_assertions = 4; // signed FreshnessAssertions
 }
 
 message LookupResponse {
-	required bytes root = 1;
 	optional bytes path = 2;
 	optional bytes public_key = 3;
+}
+
+message FreshnessAssertion {
+	required int64 time = 1;
+	required bytes root = 2;
+	optional bool finalized = 3;
 }

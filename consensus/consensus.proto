@@ -8,7 +8,7 @@ message ConsensusMSG {
 	optional bytes commitment = 4; // signed Commitment
 	optional bytes ack = 5; // signed Acknowledgement
 	optional bytes round_key  = 6; // [32]byte: the round key
-	optional bytes publish  = 7; // signed ConsensusResult
+	optional Result Publish = 7;
 }
 
 message CommitData {
@@ -28,6 +28,11 @@ message Acknowledgement {
 	required int64 commiter = 1;
 	required int64 acker = 2;
 	required bytes commitment  = 3;  // Commitment signed by commiter
+}
+
+message Result {
+	required bytes consensus_result = 1; // signed
+	required bytes aux = 2;
 }
 
 message ConsensusResult {

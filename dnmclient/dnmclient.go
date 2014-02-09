@@ -13,6 +13,8 @@ import (
 	"github.com/andres-erbsen/sgp"
 	"github.com/daniel-ziegler/merklemap"
 	"io/ioutil"
+	"log"
+	"time"
 )
 
 type Cfg struct {
@@ -90,7 +92,8 @@ func New(pks []*sgp.Entity, server string, proxy_dialer proxy.Dialer) *DenameCli
 	return dnmc
 }
 
-func (dnmc *DenameClient) roundTrip(msg *protocol.C2SMessage) (response []byte, err error) {
+func (dnmc *DenameClient) roundTrip(msg *protocol.C2SMessage) (
+	ret *protocol.S2CMessage, err error) {
 	query_bs, err := proto.Marshal(msg)
 	if err != nil {
 		return
@@ -110,16 +113,20 @@ func (dnmc *DenameClient) roundTrip(msg *protocol.C2SMessage) (response []byte, 
 	if _, err = conn.Write(query_bs); err != nil {
 		return
 	}
-	return ioutil.ReadAll(conn)
-}
-
-func (dnmc *DenameClient) Lookup(name string) (entity *sgp.Entity, err error) {
-	response_bs, err := dnmc.roundTrip(&protocol.C2SMessage{Lookup: []byte(name)})
+	ret_bs, err := ioutil.ReadAll(conn)
 	if err != nil {
 		return
 	}
-	response := new(protocol.LookupResponse)
-	if err = proto.Unmarshal(response_bs, response); err != nil {
+
+	ret = new(protocol.S2CMessage)
+	return ret, proto.Unmarshal(ret_bs, ret)
+}
+
+func (dnmc *DenameClient) Lookup(name string) (entity *sgp.Entity, err error) {
+	_true := true
+	response, err := dnmc.roundTrip(&protocol.C2SMessage{Lookup: []byte(name),
+		GetRoot: &_true, GetFreshness: &_true})
+	if err != nil {
 		return
 	}
 
@@ -136,11 +143,11 @@ func (dnmc *DenameClient) Lookup(name string) (entity *sgp.Entity, err error) {
 	}
 
 	path := new(merklemap.MerklePath)
-	if err = proto.Unmarshal(response.Path, path); err != nil {
+	if err = proto.Unmarshal(response.LookupResponse.Path, path); err != nil {
 		return
 	}
 
-	pk_hash := merklemap.Hash(response.PublicKey)
+	pk_hash := merklemap.Hash(response.LookupResponse.PublicKey)
 	name_hash := merklemap.Hash([]byte(name))
 	perceived_root := path.ComputeRootHash(name_hash, pk_hash)
 	if !bytes.Equal(verified_result.Result, perceived_root) {
@@ -148,7 +155,29 @@ func (dnmc *DenameClient) Lookup(name string) (entity *sgp.Entity, err error) {
 	}
 
 	entity = new(sgp.Entity)
-	err = entity.Parse(response.PublicKey)
+	err = entity.Parse(response.LookupResponse.PublicKey)
+
+	freshness_times := make([]*time.Time, len(dnmc.verifiers))
+	freshness := new(protocol.FreshnessAssertion)
+	vrfs := sgp.OneOf(dnmc.verifiers)
+	for _, frs_s_bs := range response.FreshnessAssertions {
+		freshness_bs, i, err := vrfs.Verify(frs_s_bs, protocol.SIGN_TAG_FRESHNESS)
+		if err != nil {
+			continue
+		}
+		if err = proto.Unmarshal(freshness_bs, freshness); err != nil {
+			continue
+		}
+		if !bytes.Equal(freshness.Root, verified_result.Result) {
+			return nil, errors.New("freshness root mismatch")
+		}
+		t_i := time.Unix(*freshness.Time, 0)
+		freshness_times[i] = &t_i
+	}
+
+	log.Print(freshness_times)
+	// TODO: how strong freshness should we require? For now, none
+
 	return
 }
 
@@ -172,12 +201,9 @@ func Transfer(sk *sgp.SecretKey, name string, pk *sgp.Entity) []byte {
 
 func (dnmc *DenameClient) Accept(sk *sgp.SecretKey, signed_transfer []byte) (err error) {
 	// get a fresh root to use as proof of freshness of the signed_transfer
-	response_bs, err := dnmc.roundTrip(&protocol.C2SMessage{Lookup: []byte("")})
+	_true := true
+	response, err := dnmc.roundTrip(&protocol.C2SMessage{GetRoot: &_true})
 	if err != nil {
-		return
-	}
-	response := new(protocol.LookupResponse)
-	if err = proto.Unmarshal(response_bs, response); err != nil {
 		return
 	}
 

@@ -109,10 +109,10 @@ func (dn *Dename) PeerConnected(conn net.Conn) {
 		peer.conn = conn
 	}
 	go dn.c.RefreshPeer(peer.id)
-	go peer.ReceiveLoop(dn.c.OnMessage)
+	go peer.ReceiveLoop(dn.Dispatch)
 }
 
-func (peer *Peer) ReceiveLoop(f func(int64, []byte)) (err error) {
+func (peer *Peer) ReceiveLoop(handleFunc func(int64, []byte)) (err error) {
 	peer.RLock()
 	conn := peer.conn
 	closeOnce := peer.closeOnce
@@ -128,7 +128,7 @@ func (peer *Peer) ReceiveLoop(f func(int64, []byte)) (err error) {
 		if err != nil {
 			break
 		}
-		f(peer.id, buf)
+		handleFunc(peer.id, buf)
 	}
 	if err != nil {
 		peer.Lock()
@@ -143,15 +143,19 @@ func (peer *Peer) CloseConn() {
 	peer.conn = nil
 }
 
-func (peer *Peer) Send(msg_bs []byte) error {
+func (peer *Peer) Send(tag uint8, msg_bs []byte) error {
 	peer.RLock()
 	conn := peer.conn
 	peer.RUnlock()
 	if conn == nil {
 		return errors.New(fmt.Sprintf("SendToPeer: No connection to %v present", peer.id))
 	}
-	buf := bytes.NewBuffer(make([]byte, 0, 2+len(msg_bs)))
-	err := binary.Write(buf, binary.LittleEndian, uint16(len(msg_bs)))
+	buf := bytes.NewBuffer(make([]byte, 0, 1+2+len(msg_bs)))
+	err := binary.Write(buf, binary.LittleEndian, uint16(1+len(msg_bs)))
+	if err != nil {
+		panic(err)
+	}
+	err = binary.Write(buf, binary.LittleEndian, tag)
 	if err != nil {
 		panic(err)
 	}
@@ -160,4 +164,26 @@ func (peer *Peer) Send(msg_bs []byte) error {
 		return err
 	}
 	return nil
+}
+
+func (peer *Peer) ConsensusSend(msg_bs []byte) error {
+	return peer.Send(0, msg_bs)
+}
+
+func (peer *Peer) DenameSend(msg_bs []byte) error {
+	return peer.Send(1, msg_bs)
+}
+
+func (dn *Dename) Dispatch(peer_id int64, msg_bs []byte) {
+	if len(msg_bs) == 0 {
+		log.Fatal("Empty message")
+	}
+	switch msg_bs[0] {
+	case 0:
+		dn.c.OnMessage(peer_id, msg_bs[1:])
+	case 1:
+		dn.FreshnessReceived(peer_id, msg_bs[1:])
+	default:
+		log.Fatalf("Invalid message received from %v: type %v", peer_id, msg_bs[0])
+	}
 }

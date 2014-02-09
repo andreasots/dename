@@ -154,19 +154,20 @@ func main() {
 	}
 	sort.IntSlice(dn.peer_ids).Sort()
 
-	t := time.Unix(cfg.Naming.StartTime, 0)
+	t0 := time.Unix(cfg.Naming.StartTime, 0)
 	dt, err := time.ParseDuration(cfg.Naming.Interval)
 	if err != nil {
 		log.Fatal("Bad interval in configuration file")
 	}
 	dn.c = consensus.NewConsensus(dn.db, &dn.our_sk, dn.us.id,
-		dn.QueueProcessor, t, dt, consensus_peers, protocol.ConsensusSignTags)
+		dn.QueueProcessor, t0, dt, consensus_peers, protocol.ConsensusSignTags)
 
 	go dn.ListenForPeers()
 	go dn.ConnectToPeers()
 	if cfg.Clients.Host != "" {
 		go dn.ListenForClients(cfg.Clients.Host)
 	}
+	go dn.MaintainFreshness(t0, dt)
 	dn.c.Run()
 }
 
@@ -187,23 +188,38 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 		return
 	}
 
-	switch {
-	case msg.Lookup != nil:
-		dn.HandleClientLookup(conn, msg.Lookup)
-	case msg.Transfer != nil:
-		dn.HandleClientTransfer(msg.Transfer)
-	}
-}
-
-func (dn *Dename) HandleClientLookup(conn net.Conn, name []byte) {
-	var signed_root []byte
-	var round, snapshot int64
-	err := dn.db.QueryRow(`SELECT id, signed_result from rounds WHERE
-	signed_result is not NULL ORDER BY id DESC`).Scan(&round, &signed_root)
+	reply := new(protocol.S2CMessage)
+	var round int64
+	err = dn.db.QueryRow(`SELECT id, signed_result FROM rounds WHERE
+	signed_result is not NULL ORDER BY id DESC`).Scan(&round, &reply.Root)
 	if err != nil {
 		log.Fatalf("SELECT last signed round: %s", err)
 	}
-	err = dn.db.QueryRow(`SELECT snapshot from naming_snapshots
+
+	if msg.GetRoot == nil {
+		reply.Root = nil
+	}
+	if msg.Lookup != nil {
+		dn.HandleClientLookup(reply, round, msg.Lookup)
+	}
+	if msg.Transfer != nil {
+		dn.HandleClientTransfer(msg.Transfer)
+	}
+	if msg.GetFreshness != nil {
+		dn.HandleClientFreshness(reply, round)
+	}
+
+	reply_bs, err := proto.Marshal(reply)
+	if err != nil {
+		panic(err)
+	}
+	conn.Write(reply_bs)
+}
+
+func (dn *Dename) HandleClientLookup(reply *protocol.S2CMessage,
+	round int64, name []byte) {
+	var snapshot int64
+	err := dn.db.QueryRow(`SELECT snapshot from naming_snapshots
 		WHERE round = $1`, round).Scan(&snapshot)
 	if err != nil && err != sql.ErrNoRows {
 		log.Fatalf("SELECT snapshot for round %d: %s", round, err)
@@ -212,22 +228,18 @@ func (dn *Dename) HandleClientLookup(conn net.Conn, name []byte) {
 	if err != nil {
 		log.Fatalf("mm.GetSnapshot(%d).OpenHandle(): %s", snapshot, err)
 	}
+	reply.LookupResponse = new(protocol.LookupResponse)
 	defer mapHandle.Close()
 	pk, path := dn.Resolve(mapHandle, name)
-	var pk_bs, path_bs []byte
 	if pk != nil {
-		pk_bs = pk.Bytes
-		path_bs, err = proto.Marshal(path)
+		reply.LookupResponse.PublicKey = pk.Bytes
+		reply.LookupResponse.Path, err = proto.Marshal(path)
 		if err != nil {
 			panic(err)
 		}
+	} else {
+		// TODO: merklemap: proof of absence
 	}
-	response_bs, err := proto.Marshal(&protocol.LookupResponse{
-		Root: signed_root, Path: path_bs, PublicKey: pk_bs})
-	if err != nil {
-		panic(err)
-	}
-	conn.Write(response_bs)
 }
 
 // Resolve does a Name -> PublicKey,MerkleProof lookup. Returns nil if not found
@@ -265,6 +277,7 @@ func (dn *Dename) HandleClientTransfer(rq_bs []byte) {
 		dn.lockednames[string(name)] = struct{}{}
 		dn.lockednames_mutex.Unlock()
 		dn.c.IncomingRequests <- rq_bs
+		// TODO: signed promise to transfer the name
 	}
 }
 
@@ -303,7 +316,7 @@ func (dn *Dename) ValidateRequest(rq_bs []byte) (name []byte, new_pk *sgp.Entity
 		rounds WHERE signed_result IS NOT NULL ORDER BY id DESC LIMIT 1) - $1)
 		AND result = $2`, dn.freshnessThreshold, freshRoot).Scan(&_one)
 	if err != nil && err != sql.ErrNoRows {
-		log.Fatalf("SELECT latest snapshot: %s", err)
+		log.Fatalf("SELECT: check request freshness proof: %s", err)
 	} else if err == sql.ErrNoRows {
 		return nil, nil, err
 	}
@@ -334,8 +347,25 @@ func NaiveParseRequest(accept_signed_bs []byte) ([]byte, *sgp.Entity, []byte, er
 	return transfer.Name, new_pk, accept.FreshRoot, nil
 }
 
+func (dn *Dename) HandleClientFreshness(reply *protocol.S2CMessage, round int64) {
+	rows, err := dn.db.Query(`SELECT DISTINCT ON (sender) result FROM auxresults
+		WHERE round = $1 ORDER BY sender, id DESC`, round)
+	if err != nil {
+		log.Fatalf("Cannot load auxresults: %s", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var freshness_bs []byte
+		if err := rows.Scan(&freshness_bs); err != nil {
+			log.Fatalf("msg from db: rows.Scan(&assertion_bs): %s", err)
+		}
+		reply.FreshnessAssertions = append(reply.FreshnessAssertions, freshness_bs)
+	}
+}
+
 func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
-	shared_prng *prng.PRNG, round int64) []byte {
+	shared_prng *prng.PRNG, round int64) ([]byte, []byte) {
+	var rootHash *[32]byte
 	rnd := rand.New(shared_prng)
 	last_round, snapshot := int64(0), int64(0) // if ErrNoRows
 	err := dn.db.QueryRow(`SELECT round, snapshot from naming_snapshots
@@ -351,72 +381,140 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 
 	if last_round > round {
 		log.Fatalf("QueueProcessor(r%d) after done round %d", round, last_round)
-	} else if round == last_round { // already processed
-		if rootHash, err := mapHandle.GetRootHash(); err == nil {
-			return rootHash[:]
-		} else {
-			log.Fatalf("mapHandle.GetRootHash(): %s", err)
-		}
 	} else if last_round < round-1 {
 		log.Fatalf("Skipped rounds between %d and %d", last_round, round)
-	}
+	} else if round == last_round { // already processed
+		if rootHash, err = mapHandle.GetRootHash(); err != nil {
+			log.Fatalf("mapHandle.GetRootHash(): %s", err)
+		}
+	} else {
+		rainbow_insert, err := dn.db.Prepare(`INSERT INTO rainbow(hash, preimage)
+			VALUES($1,$2)`)
+		if err != nil {
+			log.Fatalf("PREPARE rainbow_insert: %s", err)
+		}
+		defer rainbow_insert.Close()
 
-	rainbow_insert, err := dn.db.Prepare(`INSERT INTO rainbow(hash, preimage)
-		VALUES($1,$2)`)
-	if err != nil {
-		log.Fatalf("PREPARE rainbow_insert: %s", err)
-	}
-	defer rainbow_insert.Close()
-
-	name_modified := make(map[string]int64)
-	for _, i := range rnd.Perm(len(peer_rq_map)) {
-		peer_id := int64(dn.peer_ids[i])
-		for _, rq_bs := range *peer_rq_map[peer_id] {
-			name, pk, err := dn.ValidateRequest(rq_bs)
-			if err != nil {
-				log.Printf("qpr: invalid transfer of \"%s\" by %d (%s)", string(name), peer_id, err)
-				continue
-			} else if winner, already := name_modified[string(name)]; already {
-				log.Printf("qpr: duplicate transfer of \"%s\" by %d after %d",
-					string(name), peer_id, winner)
-				continue
-			}
-			name_modified[string(name)] = peer_id
-			pk_hash := merklemap.Hash(pk.Bytes)
-			if err = mapHandle.Set(merklemap.Hash(name), pk_hash); err != nil {
-				log.Fatalf("mapHandle.Set(name,pk): %s", err)
-			}
-			_, err = rainbow_insert.Exec(pk_hash[:], pk.Bytes)
-			if err != nil && !pgutil.IsError(err, pgutil.ErrUniqueViolation) {
-				log.Fatalf("QueueProcessor: rainbow_insert.Exec(...): %s", err)
+		name_modified := make(map[string]int64)
+		for _, i := range rnd.Perm(len(peer_rq_map)) {
+			peer_id := int64(dn.peer_ids[i])
+			for _, rq_bs := range *peer_rq_map[peer_id] {
+				name, pk, err := dn.ValidateRequest(rq_bs)
+				if err != nil {
+					log.Printf("qpr: invalid transfer of \"%s\" by %d (%s)", string(name), peer_id, err)
+					continue
+				} else if winner, already := name_modified[string(name)]; already {
+					log.Printf("qpr: duplicate transfer of \"%s\" by %d after %d",
+						string(name), peer_id, winner)
+					continue
+				}
+				name_modified[string(name)] = peer_id
+				pk_hash := merklemap.Hash(pk.Bytes)
+				if err = mapHandle.Set(merklemap.Hash(name), pk_hash); err != nil {
+					log.Fatalf("mapHandle.Set(name,pk): %s", err)
+				}
+				_, err = rainbow_insert.Exec(pk_hash[:], pk.Bytes)
+				if err != nil && !pgutil.IsError(err, pgutil.ErrUniqueViolation) {
+					log.Fatalf("QueueProcessor: rainbow_insert.Exec(...): %s", err)
+				}
 			}
 		}
+
+		rootHash, err = mapHandle.GetRootHash()
+		if err != nil {
+			log.Fatalf("mapHandle.GetRootHash(): %s", err)
+		}
+		newNaming, err := mapHandle.FinishUpdate()
+		if err != nil {
+			log.Fatalf("mapHandle.FinishUpdate(): %s", err)
+		}
+
+		log.Printf("#%d = %x", round, *rootHash)
+		_, err = dn.db.Exec(`INSERT INTO naming_snapshots(round, snapshot)
+			VALUES($1,$2)`, round, newNaming.GetId())
+		if err != nil {
+			log.Fatalf("INSERT round %d snapshot %d: %s", round, newNaming.GetId(), err)
+		}
+
+		dn.lockednames_mutex.Lock()
+		for _, rq_bs := range *peer_rq_map[dn.us.id] {
+			if name, _, _, err := NaiveParseRequest(rq_bs); err == nil {
+				delete(dn.lockednames, string(name))
+			} else {
+				panic(err)
+			}
+		}
+		dn.lockednames_mutex.Unlock()
 	}
 
-	rootHash, err := mapHandle.GetRootHash()
-	if err != nil {
-		log.Fatalf("mapHandle.GetRootHash(): %s", err)
-	}
-	newNaming, err := mapHandle.FinishUpdate()
-	if err != nil {
-		log.Fatalf("mapHandle.FinishUpdate(): %s", err)
-	}
+	return rootHash[:], dn.MakeFreshnessAssertion(rootHash[:], false)
+}
 
-	log.Printf("#%d = %x", round, *rootHash)
-	_, err = dn.db.Exec(`INSERT INTO naming_snapshots(round, snapshot)
-		VALUES($1,$2)`, round, newNaming.GetId())
+func (dn *Dename) MakeFreshnessAssertion(rootHash []byte, finalized bool) []byte {
+	t := new(int64)
+	*t = time.Now().Unix()
+	freshness_bs, err := proto.Marshal(&protocol.FreshnessAssertion{
+		Time: t, Root: rootHash, Finalized: &finalized})
 	if err != nil {
-		log.Fatalf("INSERT round %d snapshot %d: %s", round, newNaming.GetId(), err)
+		panic(err)
 	}
+	return dn.our_sk.Sign(freshness_bs, protocol.SIGN_TAG_FRESHNESS)
+}
 
-	dn.lockednames_mutex.Lock()
-	for _, rq_bs := range *peer_rq_map[dn.us.id] {
-		if name, _, _, err := NaiveParseRequest(rq_bs); err == nil {
-			delete(dn.lockednames, string(name))
-		} else {
-			panic(err)
+func (dn *Dename) MaintainFreshness(t0 time.Time, dt time.Duration) {
+	time.Sleep(t0.Sub(time.Now()))
+	d_half := dt / 2
+	halves_passed := time.Now().Sub(t0) / d_half
+	next_midpoint := t0.Add(halves_passed*d_half + d_half)
+	if halves_passed%2 == 1 { // we are at a midpoint, wait more
+		next_midpoint = next_midpoint.Add(d_half)
+	}
+	time.Sleep(next_midpoint.Sub(time.Now()))
+	for t := range time.Tick(dt) {
+		expected_round_finalized := int64(t.Sub(t0) / dt)
+		var rootHash []byte
+		round := int64(-1)
+		err := dn.db.QueryRow(`SELECT id, result FROM rounds WHERE
+		result is not NULL ORDER BY id DESC`).Scan(&round, &rootHash)
+		if err != nil && err != sql.ErrNoRows {
+			log.Fatalf("SELECT last signed round: %s", err)
+		}
+		if round > expected_round_finalized {
+			log.Fatal("Ahead of schedule")
+		} else if round == expected_round_finalized || round == -1 {
+			continue // we are on time
+		} // we are behind, let's compensate with freshness assertions
+		freshness_signed_bs := dn.MakeFreshnessAssertion(rootHash, true)
+		_, err = dn.db.Exec(`INSERT INTO auxresults(round,sender,result)
+			VALUES($1,$2,$3)`, round, dn.us.id, freshness_signed_bs)
+		if err != nil {
+			log.Fatalf("Insert freshness to db %x: %s", freshness_signed_bs, err)
+		}
+		for _, peer := range dn.peers {
+			peer.DenameSend(freshness_signed_bs)
 		}
 	}
-	dn.lockednames_mutex.Unlock()
-	return rootHash[:]
+}
+
+func (dn *Dename) FreshnessReceived(peer_id int64, freshness_signed_bs []byte) {
+	freshness_bs, err := dn.peers[peer_id].pk.Verify(freshness_signed_bs,
+		protocol.SIGN_TAG_FRESHNESS)
+	if err != nil {
+		log.Fatalf("%d Verify(freshness_signed_bs): %s", peer_id, err)
+	}
+	freshness := new(protocol.FreshnessAssertion)
+	if err := proto.Unmarshal(freshness_bs, freshness); err != nil {
+		log.Fatalf("%d proto.Unmarshal(freshness_bs, freshness): %s", peer_id, err)
+	}
+	var round int64
+	err = dn.db.QueryRow(`SELECT id FROM rounds WHERE result = $1
+		ORDER BY id DESC LIMIT 1`, freshness.Root).Scan(&round)
+	if err != nil {
+		log.Fatalf("SELECT snapshot for freshness: %s", err)
+	}
+	_, err = dn.db.Exec(`INSERT INTO auxresults(round,sender,result)
+		VALUES($1,$2,$3)`, round, peer_id, freshness_signed_bs)
+	if err != nil {
+		log.Fatalf("Insert freshness to db %v: %s", freshness_signed_bs, err)
+	}
 }

@@ -155,12 +155,12 @@ func (r *round) Process() {
 	for _, rqs := range r.requests {
 		sort.Sort(ByteSlices(*rqs))
 	}
-	result := r.c.QueueProcessor(r.requests, r.shared_prng, r.id)
+	canonical_result, aux_result := r.c.QueueProcessor(r.requests, r.shared_prng, r.id)
 	r.next.startHandlingCommitments()
 	r.next.startHandlingAcknowledgements()
 	r.next.next = newRound(r.next.id+1, r.next.openAtLeastUntil.Add(r.c.TickInterval), r.c)
 	r.next.next.startAcceptingPushes()
-	r.Publish(result)
+	r.Publish(canonical_result, aux_result)
 
 	<-r.afterPublishes
 	log.Printf("round %v: got publishes", r.id)
@@ -380,7 +380,12 @@ func (r *round) startHandlingKeys() {
 	}()
 }
 
-func (r *round) Publish(result []byte) {
+func (r *round) Publish(result, aux []byte) {
+	_, err := r.c.db.Exec(`INSERT INTO auxresults(round,sender,result)
+		VALUES($1,$2,$3)`, r.id, r.c.our_id, aux)
+	if err != nil && !pgutil.IsError(err, pgutil.ErrUniqueViolation) {
+		log.Fatalf("Insert aux result: %s", err)
+	}
 	publish_bs, err := proto.Marshal(&ConsensusResult{
 		Round: &r.id, Result: result})
 	if err != nil {
@@ -400,7 +405,7 @@ func (r *round) Publish(result []byte) {
 		log.Fatalf("UPDATE rounds SET result affected %d rows", n)
 	}
 	r.c.broadcast(&ConsensusMSG{Server: &r.c.our_id,
-		Round: &r.id, Publish: signed_bs})
+		Round: &r.id, Publish: &Result{ConsensusResult: signed_bs, Aux: aux}})
 	close(r.afterWeHavePublished)
 }
 
@@ -416,7 +421,7 @@ func (r *round) startHandlingPublishes() {
 	hasPublished := make(map[int64]struct{})
 	r.c.router.Receive(r.id, PUBLISH, func(msg *ConsensusMSG) bool {
 		signed := new(sgp.Signed)
-		err := proto.Unmarshal(msg.Publish, signed)
+		err := proto.Unmarshal(msg.Publish.ConsensusResult, signed)
 		if err != nil {
 			log.Fatalf("Bad publish from %d: %f", *msg.Server, err)
 		}
@@ -428,6 +433,11 @@ func (r *round) startHandlingPublishes() {
 		}
 		if !r.c.Peers[*msg.Server].PK().VerifyPb(signed, r.c.sign_tags[PUBLISH]) {
 			log.Fatalf("Invalid signature on publish from %d: %f", *msg.Server, err)
+		}
+		_, err = r.c.db.Exec(`INSERT INTO auxresults(round,sender,result)
+			VALUES($1,$2,$3)`, *msg.Round, *msg.Server, msg.Publish.Aux)
+		if err != nil && !pgutil.IsError(err, pgutil.ErrUniqueViolation) {
+			log.Fatalf("Insert aux result: %s", err)
 		}
 		if _, already := hasPublished[*msg.Server]; !already {
 			hasPublished[*msg.Server] = struct{}{}

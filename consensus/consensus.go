@@ -16,12 +16,13 @@ import (
 // requests in some way. A randomness source shared between the servers
 // is also available, but care has to be taken to read from it in a
 // deterministic way. QueueProcessor should return a short description
-// (usually a hash) of the new state. Last argument is round number.
-// QueueProcessor :: Map Server [Request] -> Rand -> Int64 -> State -> State
-type QueueProcessor func(map[int64]*[][]byte, *prng.PRNG, int64) []byte
+// (usually a hash) of the new state and a an ouput which does not have
+// to be the same for all servers. The last argument is the round number
+// QueueProcessor :: Map Server [Request] -> Rand -> Int64 -> CanonicalState -> (CanonicalState, AuxiliaryData)
+type QueueProcessor func(map[int64]*[][]byte, *prng.PRNG, int64) ([]byte, []byte)
 
 type Peer_ interface {
-	Send([]byte) error
+	ConsensusSend([]byte) error
 	PK() *sgp.Entity
 }
 
@@ -87,7 +88,7 @@ func (c *Consensus) broadcast(msg *ConsensusMSG) {
 	c.savemsg(msg, msg_bs)
 	for id, peer := range c.Peers {
 		if id != c.our_id {
-			if err := peer.Send(msg_bs); err != nil {
+			if err := peer.ConsensusSend(msg_bs); err != nil {
 				log.Printf("peer%d.Send(msg_bs{%d %s} = %x): %s", id, *msg.Round, msgtypeName[msgtype(msg)], msg_bs, err)
 			}
 		}
@@ -117,7 +118,7 @@ func (c *Consensus) RefreshPeer(id int64) (err error) {
 		if err := rows.Scan(&msg_bs); err != nil {
 			log.Fatalf("our msg from db: rows.Scan(&msg_bs): %s", err)
 		}
-		if err := c.Peers[id].Send(msg_bs); err != nil {
+		if err := c.Peers[id].ConsensusSend(msg_bs); err != nil {
 			log.Printf("RefreshPeer: c.Peers[id].Send(msg_bs): %s", err)
 			return err
 		}

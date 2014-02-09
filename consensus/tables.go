@@ -22,6 +22,17 @@ func (c *Consensus) createTables() {
 		log.Fatal("Cannot create table rounds: ", err)
 	}
 
+	// auxresults
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS auxresults (
+		id bigserial not null primary key,
+		round bigint not null,
+		sender integer not null,
+		result bytea not null,
+		FOREIGN KEY(sender) REFERENCES servers(id));`)
+	if err != nil {
+		log.Fatal("Cannot create table auxresults: ", err)
+	}
+
 	// messages
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS messages (
 		id bigserial not null primary key,

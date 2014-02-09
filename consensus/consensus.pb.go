@@ -17,12 +17,12 @@ type ConsensusMSG struct {
 	Round  *int64 `protobuf:"varint,1,req,name=round" json:"round,omitempty"`
 	Server *int64 `protobuf:"varint,2,req,name=server" json:"server,omitempty"`
 	// one of the following:
-	PushQueue        []byte `protobuf:"bytes,3,opt,name=push_queue" json:"push_queue,omitempty"`
-	Commitment       []byte `protobuf:"bytes,4,opt,name=commitment" json:"commitment,omitempty"`
-	Ack              []byte `protobuf:"bytes,5,opt,name=ack" json:"ack,omitempty"`
-	RoundKey         []byte `protobuf:"bytes,6,opt,name=round_key" json:"round_key,omitempty"`
-	Publish          []byte `protobuf:"bytes,7,opt,name=publish" json:"publish,omitempty"`
-	XXX_unrecognized []byte `json:"-"`
+	PushQueue        []byte  `protobuf:"bytes,3,opt,name=push_queue" json:"push_queue,omitempty"`
+	Commitment       []byte  `protobuf:"bytes,4,opt,name=commitment" json:"commitment,omitempty"`
+	Ack              []byte  `protobuf:"bytes,5,opt,name=ack" json:"ack,omitempty"`
+	RoundKey         []byte  `protobuf:"bytes,6,opt,name=round_key" json:"round_key,omitempty"`
+	Publish          *Result `protobuf:"bytes,7,opt" json:"Publish,omitempty"`
+	XXX_unrecognized []byte  `json:"-"`
 }
 
 func (m *ConsensusMSG) Reset()         { *m = ConsensusMSG{} }
@@ -71,7 +71,7 @@ func (m *ConsensusMSG) GetRoundKey() []byte {
 	return nil
 }
 
-func (m *ConsensusMSG) GetPublish() []byte {
+func (m *ConsensusMSG) GetPublish() *Result {
 	if m != nil {
 		return m.Publish
 	}
@@ -178,6 +178,30 @@ func (m *Acknowledgement) GetAcker() int64 {
 func (m *Acknowledgement) GetCommitment() []byte {
 	if m != nil {
 		return m.Commitment
+	}
+	return nil
+}
+
+type Result struct {
+	ConsensusResult  []byte `protobuf:"bytes,1,req,name=consensus_result" json:"consensus_result,omitempty"`
+	Aux              []byte `protobuf:"bytes,2,req,name=aux" json:"aux,omitempty"`
+	XXX_unrecognized []byte `json:"-"`
+}
+
+func (m *Result) Reset()         { *m = Result{} }
+func (m *Result) String() string { return proto.CompactTextString(m) }
+func (*Result) ProtoMessage()    {}
+
+func (m *Result) GetConsensusResult() []byte {
+	if m != nil {
+		return m.ConsensusResult
+	}
+	return nil
+}
+
+func (m *Result) GetAux() []byte {
+	if m != nil {
+		return m.Aux
 	}
 	return nil
 }

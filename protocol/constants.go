@@ -8,6 +8,7 @@ const (
 	SIGN_TAG_COMMIT
 	SIGN_TAG_ACK
 	SIGN_TAG_PUBLISH
+	SIGN_TAG_FRESHNESS
 )
 
 var ConsensusSignTags = map[int]uint64{
