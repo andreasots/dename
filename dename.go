@@ -55,6 +55,7 @@ type Dename struct {
 	lockednames       map[string]struct{}
 
 	freshnessThreshold int64
+	ticketer_pk        *sgp.Entity
 }
 
 type Cfg struct {
@@ -83,6 +84,7 @@ type Cfg struct {
 	Clients struct {
 		Host               string
 		FreshnessThreshold int64
+		TicketerPublicKey  string
 	}
 }
 
@@ -100,7 +102,9 @@ func main() {
 	}
 	dn := &Dename{peers: make(map[int64]*Peer, len(cfg.Peer)),
 		addr2peer:   make(map[string]*Peer, len(cfg.Peer)),
-		lockednames: make(map[string]struct{})}
+		lockednames: make(map[string]struct{}),
+		ticketer_pk: new(sgp.Entity),
+	}
 	dn.db, err = sql.Open("postgres", "user="+cfg.Database.User+" password="+cfg.Database.Password+" dbname="+cfg.Database.Name+" sslmode=disable")
 	if err != nil {
 		log.Fatalf("Cannot open database: %s", err)
@@ -144,6 +148,14 @@ func main() {
 		if bytes.Equal(dn.our_sk.Entity.Bytes, pk_bs) {
 			dn.us = peer
 		}
+	}
+
+	ticketer_pk_bs, err := base64.StdEncoding.DecodeString(cfg.Clients.TicketerPublicKey)
+	if err != nil {
+		log.Fatalf("Bad base64 as public key for ticketer")
+	}
+	if err := dn.ticketer_pk.Parse(ticketer_pk_bs); err != nil {
+		log.Fatalf("Bad pk for ticketer")
 	}
 
 	dn.peer_ids = make([]int, 0, len(dn.peers))
@@ -203,7 +215,7 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 		dn.HandleClientLookup(reply, round, msg.Lookup)
 	}
 	if msg.Transfer != nil {
-		dn.HandleClientTransfer(msg.Transfer)
+		dn.HandleClientTransfer(msg.RegToken, msg.Transfer)
 	}
 	if msg.GetFreshness != nil {
 		dn.HandleClientFreshness(reply, round)
@@ -263,10 +275,22 @@ func (dn *Dename) Resolve(mapHandle *merklemap.Handle, name []byte) (*sgp.Entity
 	return pk, path
 }
 
-func (dn *Dename) HandleClientTransfer(rq_bs []byte) {
-	name, _, err := dn.ValidateRequest(rq_bs)
+func (dn *Dename) HandleClientTransfer(regtoken, rq_bs []byte) {
+	name, old_pk, _, err := dn.ValidateRequest(rq_bs)
 	if err != nil {
 		return
+	}
+	if old_pk == nil {
+		if regtoken == nil {
+			return
+		}
+		nonce, err := dn.ticketer_pk.Verify(regtoken, protocol.SIGN_TAG_PERSONATICKET)
+		_, err = dn.db.Exec(`INSERT INTO used_tokens(nonce) VALUES($1)`, nonce)
+		if pgutil.IsError(err, pgutil.ErrUniqueViolation) {
+			return
+		} else if err != nil {
+			log.Fatalf("Lookup hash from blacklist: %s", err)
+		}
 	}
 	dn.lockednames_mutex.Lock()
 	if _, locked := dn.lockednames[string(name)]; locked {
@@ -281,7 +305,7 @@ func (dn *Dename) HandleClientTransfer(rq_bs []byte) {
 	}
 }
 
-func (dn *Dename) ValidateRequest(rq_bs []byte) (name []byte, new_pk *sgp.Entity, err error) {
+func (dn *Dename) ValidateRequest(rq_bs []byte) (name []byte, old_pk, new_pk *sgp.Entity, err error) {
 	name, new_pk, freshRoot, err := NaiveParseRequest(rq_bs)
 	if err != nil {
 		return
@@ -297,18 +321,18 @@ func (dn *Dename) ValidateRequest(rq_bs []byte) (name []byte, new_pk *sgp.Entity
 		log.Fatalf("mm.GetSnapshot(%d).OpenHandle(): %s", snapshot, err)
 	}
 	defer mapHandle.Close()
-	old_pk, _ := dn.Resolve(mapHandle, name)
+	old_pk, _ = dn.Resolve(mapHandle, name)
 	if old_pk != nil {
 		accept_bs, err := new_pk.Verify(rq_bs, protocol.SIGN_TAG_ACCEPT)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		accept := new(protocol.AcceptTransfer)
 		if err := proto.Unmarshal(accept_bs, accept); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if _, err = old_pk.Verify(accept.Transfer, protocol.SIGN_TAG_TRANSFER); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 	}
 	var _one int64
@@ -318,9 +342,9 @@ func (dn *Dename) ValidateRequest(rq_bs []byte) (name []byte, new_pk *sgp.Entity
 	if err != nil && err != sql.ErrNoRows {
 		log.Fatalf("SELECT: check request freshness proof: %s", err)
 	} else if err == sql.ErrNoRows {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return name, new_pk, nil
+	return name, old_pk, new_pk, nil
 }
 
 func NaiveParseRequest(accept_signed_bs []byte) ([]byte, *sgp.Entity, []byte, error) {
@@ -399,7 +423,7 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 		for _, i := range rnd.Perm(len(peer_rq_map)) {
 			peer_id := int64(dn.peer_ids[i])
 			for _, rq_bs := range *peer_rq_map[peer_id] {
-				name, pk, err := dn.ValidateRequest(rq_bs)
+				name, _, pk, err := dn.ValidateRequest(rq_bs)
 				if err != nil {
 					log.Printf("qpr: invalid transfer of \"%s\" by %d (%s)", string(name), peer_id, err)
 					continue

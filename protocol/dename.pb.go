@@ -66,6 +66,7 @@ type C2SMessage struct {
 	Transfer         []byte `protobuf:"bytes,2,opt,name=transfer" json:"transfer,omitempty"`
 	Lookup           []byte `protobuf:"bytes,3,opt,name=lookup" json:"lookup,omitempty"`
 	GetFreshness     *bool  `protobuf:"varint,4,opt,name=get_freshness" json:"get_freshness,omitempty"`
+	RegToken         []byte `protobuf:"bytes,5,opt,name=reg_token" json:"reg_token,omitempty"`
 	XXX_unrecognized []byte `json:"-"`
 }
 
@@ -99,6 +100,13 @@ func (m *C2SMessage) GetGetFreshness() bool {
 		return *m.GetFreshness
 	}
 	return false
+}
+
+func (m *C2SMessage) GetRegToken() []byte {
+	if m != nil {
+		return m.RegToken
+	}
+	return nil
 }
 
 type S2CMessage struct {

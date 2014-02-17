@@ -15,6 +15,7 @@ message C2SMessage {
 	optional bytes transfer = 2;
 	optional bytes lookup = 3;
 	optional bool get_freshness = 4;
+	optional bytes reg_token = 5;
 }
 
 message S2CMessage {

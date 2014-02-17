@@ -199,8 +199,7 @@ func Transfer(sk *sgp.SecretKey, name string, pk *sgp.Entity) []byte {
 	return New(nil, "", nil).Transfer(sk, name, pk)
 }
 
-func (dnmc *DenameClient) Accept(sk *sgp.SecretKey, signed_transfer []byte) (err error) {
-	// get a fresh root to use as proof of freshness of the signed_transfer
+func (dnmc *DenameClient) GetFreshnessToken() (ret []byte, err error) {
 	_true := true
 	response, err := dnmc.roundTrip(&protocol.C2SMessage{GetRoot: &_true})
 	if err != nil {
@@ -218,8 +217,15 @@ func (dnmc *DenameClient) Accept(sk *sgp.SecretKey, signed_transfer []byte) (err
 	if err = proto.Unmarshal(verified_result_bs, verified_result); err != nil {
 		return
 	}
+	return verified_result.Result, nil
+}
 
-	accept := &protocol.AcceptTransfer{Transfer: signed_transfer, FreshRoot: verified_result.Result}
+func (dnmc *DenameClient) Accept(sk *sgp.SecretKey, xfer []byte) (err error) {
+	freshRoot, err := dnmc.GetFreshnessToken()
+	if err != nil {
+		return
+	}
+	accept := &protocol.AcceptTransfer{Transfer: xfer, FreshRoot: freshRoot}
 	accept_bs, err := proto.Marshal(accept)
 	if err != nil {
 		panic(err)
@@ -233,10 +239,27 @@ func Accept(sk *sgp.SecretKey, signed_transfer []byte) error {
 	return New(nil, "", nil).Accept(sk, signed_transfer)
 }
 
-func (dnmc *DenameClient) Register(sk *sgp.SecretKey, name string) error {
-	return dnmc.Accept(sk, dnmc.Transfer(sk, name, sk.Entity))
+func (dnmc *DenameClient) Register(sk *sgp.SecretKey, name, regtoken_b64 string) error {
+	regtoken, err := base64.StdEncoding.DecodeString(regtoken_b64)
+	if err != nil {
+		return err
+	}
+	freshRoot, err := dnmc.GetFreshnessToken()
+	if err != nil {
+		return err
+	}
+	accept := &protocol.AcceptTransfer{
+		Transfer: dnmc.Transfer(sk, name, sk.Entity), FreshRoot: freshRoot}
+	accept_bs, err := proto.Marshal(accept)
+	if err != nil {
+		panic(err)
+	}
+	_, err = dnmc.roundTrip(&protocol.C2SMessage{
+		Transfer: sk.Sign(accept_bs, protocol.SIGN_TAG_ACCEPT),
+		RegToken: regtoken})
+	return err
 }
 
-func Register(sk *sgp.SecretKey, name string) error {
-	return New(nil, "", nil).Register(sk, name)
+func Register(sk *sgp.SecretKey, name, regtoken string) error {
+	return New(nil, "", nil).Register(sk, name, regtoken)
 }

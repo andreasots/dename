@@ -19,4 +19,11 @@ func (dn *Dename) CreateTables() {
 	if err != nil {
 		log.Fatal("Cannot create table naming_snapshots: ", err)
 	}
+
+	// used_tokens
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS used_tokens (
+		nonce bytea not null primary key);`)
+	if err != nil {
+		log.Fatal("Cannot create table used_tokens: ", err)
+	}
 }
