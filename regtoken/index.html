@@ -1,0 +1,19 @@
+<html>
+<body>
+
+<form name="input" action="/" method="post">
+Email: <input type="text" name="email">
+<input type="submit" value="Send me a registration token">
+</form>
+
+<h3> Allowed email addresses </h3>
+
+<ul>
+{{range .}}
+	<li> <code>{{.Pattern}}</code> {{if .Explanation}}- {{.Explanation}}{{end}}</li>
+{{end}}
+</ul>
+
+
+</body>
+</html>

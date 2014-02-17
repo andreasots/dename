@@ -9,6 +9,7 @@ const (
 	SIGN_TAG_ACK
 	SIGN_TAG_PUBLISH
 	SIGN_TAG_FRESHNESS
+	SIGN_TAG_PERSONATICKET
 )
 
 var ConsensusSignTags = map[int]uint64{

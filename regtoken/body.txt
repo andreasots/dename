@@ -1,0 +1,6 @@
+To: {{.To}}
+Subject: Dename name registration ticket
+
+Dename name registration ticket:
+
+{{.Ticket}}
