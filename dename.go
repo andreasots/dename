@@ -55,6 +55,7 @@ type Dename struct {
 	lockednames       map[string]struct{}
 
 	freshnessThreshold int64
+	expirationTicks    int64
 	ticketer_pk        *sgp.Entity
 }
 
@@ -77,9 +78,10 @@ type Cfg struct {
 		MaxConnections int
 	}
 	Naming struct {
-		StartTime int64
-		Interval  string
-		File      string
+		StartTime       int64
+		ExpirationTicks int64
+		Interval        string
+		File            string
 	}
 	Clients struct {
 		Host               string
@@ -101,9 +103,11 @@ func main() {
 		log.Fatalf("Failed to parse gcfg data: %s", err)
 	}
 	dn := &Dename{peers: make(map[int64]*Peer, len(cfg.Peer)),
-		addr2peer:   make(map[string]*Peer, len(cfg.Peer)),
-		lockednames: make(map[string]struct{}),
-		ticketer_pk: new(sgp.Entity),
+		addr2peer:          make(map[string]*Peer, len(cfg.Peer)),
+		lockednames:        make(map[string]struct{}),
+		ticketer_pk:        new(sgp.Entity),
+		expirationTicks:    cfg.Naming.ExpirationTicks,
+		freshnessThreshold: cfg.Clients.FreshnessThreshold,
 	}
 	dn.db, err = sql.Open("postgres", "user="+cfg.Database.User+" password="+cfg.Database.Password+" dbname="+cfg.Database.Name+" sslmode=disable")
 	if err != nil {
@@ -121,7 +125,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("merklemap.Open(cfg.Naming.File): %s", err)
 	}
-	dn.freshnessThreshold = cfg.Clients.FreshnessThreshold
 
 	for id_str, peercfg := range cfg.Peer {
 		peer := &Peer{pk: new(sgp.Entity)}
@@ -425,6 +428,24 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 		}
 		defer rainbow_insert.Close()
 
+		// checking the modification times is non-idempotent, so do it in a tx
+		tx, err := dn.db.Begin()
+		if err != nil {
+			log.Fatalf("dn.db.Begin(): %s", err)
+		}
+
+		reset_modified, err := tx.Prepare(`DELETE from last_modified WHERE name = $1`)
+		if err != nil {
+			log.Fatalf("PREPARE reset_modified: %s", err)
+		}
+		defer reset_modified.Close()
+		set_modified, err := tx.Prepare(`INSERT INTO last_modified(name, round)
+			VALUES($1,` + fmt.Sprint(round) + `);`)
+		if err != nil {
+			log.Fatalf("PREPARE set_modified: %s", err)
+		}
+		defer set_modified.Close()
+
 		name_modified := make(map[string]int64)
 		for _, i := range rnd.Perm(len(peer_rq_map)) {
 			peer_id := int64(dn.peer_ids[i])
@@ -447,6 +468,31 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 				if err != nil && !pgutil.IsError(err, pgutil.ErrUniqueViolation) {
 					log.Fatalf("QueueProcessor: rainbow_insert.Exec(...): %s", err)
 				}
+				if _, err := reset_modified.Exec(name); err != nil {
+					log.Fatalf("reset_modified.Exec(name): %s", err)
+				}
+				if _, err := set_modified.Exec(name); err != nil {
+					log.Fatalf("set_modified.Exec(name): %s", err)
+				}
+			}
+		}
+
+		rows, err := tx.Query(`SELECT name FROM last_modified WHERE round = $1`,
+			round-dn.expirationTicks)
+		if err != nil {
+			log.Fatalf("last modified: %s", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name []byte
+			if err := rows.Scan(&name); err != nil {
+				log.Fatalf("last_modified[i].Scan(&name): %s", err)
+			}
+			if err = mapHandle.Delete(merklemap.Hash(name)); err != nil {
+				log.Fatalf("mapHandle.Delete(name): %s", err)
+			}
+			if _, err := reset_modified.Exec(name); err != nil {
+				log.Fatalf("reset_modified.Exec(name): %s", err)
 			}
 		}
 
@@ -460,10 +506,13 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 		}
 
 		log.Printf("#%d = %x", round, *rootHash)
-		_, err = dn.db.Exec(`INSERT INTO naming_snapshots(round, snapshot)
+		_, err = tx.Exec(`INSERT INTO naming_snapshots(round, snapshot)
 			VALUES($1,$2)`, round, newNaming.GetId())
 		if err != nil {
 			log.Fatalf("INSERT round %d snapshot %d: %s", round, newNaming.GetId(), err)
+		}
+		if err := tx.Commit(); err != nil {
+			log.Fatalf("Commit last_modified and root: %s", err)
 		}
 
 		dn.lockednames_mutex.Lock()

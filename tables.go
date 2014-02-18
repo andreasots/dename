@@ -26,4 +26,12 @@ func (dn *Dename) CreateTables() {
 	if err != nil {
 		log.Fatal("Cannot create table used_tokens: ", err)
 	}
+
+	// last_modified
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS last_modified (
+		name bytea not null primary key,
+		round bigint not null);`)
+	if err != nil {
+		log.Fatal("Cannot create table last_modified: ", err)
+	}
 }
