@@ -215,7 +215,7 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 		dn.HandleClientLookup(reply, round, msg.Lookup)
 	}
 	if msg.Transfer != nil {
-		dn.HandleClientTransfer(msg.RegToken, msg.Transfer)
+		dn.HandleClientTransfer(reply, msg.RegToken, msg.Transfer)
 	}
 	if msg.GetFreshness != nil {
 		dn.HandleClientFreshness(reply, round)
@@ -275,7 +275,9 @@ func (dn *Dename) Resolve(mapHandle *merklemap.Handle, name []byte) (*sgp.Entity
 	return pk, path
 }
 
-func (dn *Dename) HandleClientTransfer(regtoken, rq_bs []byte) {
+func (dn *Dename) HandleClientTransfer(reply *protocol.S2CMessage, regtoken, rq_bs []byte) {
+	_true, _false := true, false
+	reply.TransferLooksGood = &_false
 	name, old_pk, _, err := dn.ValidateRequest(rq_bs)
 	if err != nil {
 		return
@@ -285,6 +287,9 @@ func (dn *Dename) HandleClientTransfer(regtoken, rq_bs []byte) {
 			return
 		}
 		nonce, err := dn.ticketer_pk.Verify(regtoken, protocol.SIGN_TAG_PERSONATICKET)
+		if err != nil {
+			return
+		}
 		_, err = dn.db.Exec(`INSERT INTO used_tokens(nonce) VALUES($1)`, nonce)
 		if pgutil.IsError(err, pgutil.ErrUniqueViolation) {
 			return
@@ -298,6 +303,7 @@ func (dn *Dename) HandleClientTransfer(regtoken, rq_bs []byte) {
 		log.Printf("Name \"%s\" already locked for update", string(name))
 		return
 	} else {
+		reply.TransferLooksGood = &_true
 		dn.lockednames[string(name)] = struct{}{}
 		dn.lockednames_mutex.Unlock()
 		dn.c.IncomingRequests <- rq_bs

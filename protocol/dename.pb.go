@@ -111,6 +111,7 @@ func (m *C2SMessage) GetRegToken() []byte {
 
 type S2CMessage struct {
 	Root                []byte          `protobuf:"bytes,1,opt,name=root" json:"root,omitempty"`
+	TransferLooksGood   *bool           `protobuf:"varint,2,opt,name=transfer_looks_good" json:"transfer_looks_good,omitempty"`
 	LookupResponse      *LookupResponse `protobuf:"bytes,3,opt,name=lookup_response" json:"lookup_response,omitempty"`
 	FreshnessAssertions [][]byte        `protobuf:"bytes,4,rep,name=freshness_assertions" json:"freshness_assertions,omitempty"`
 	XXX_unrecognized    []byte          `json:"-"`
@@ -125,6 +126,13 @@ func (m *S2CMessage) GetRoot() []byte {
 		return m.Root
 	}
 	return nil
+}
+
+func (m *S2CMessage) GetTransferLooksGood() bool {
+	if m != nil && m.TransferLooksGood != nil {
+		return *m.TransferLooksGood
+	}
+	return false
 }
 
 func (m *S2CMessage) GetLookupResponse() *LookupResponse {

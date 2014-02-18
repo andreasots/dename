@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	if len(os.Args) != 3 && len(os.Args) != 4 {
+	if len(os.Args) != 4 {
 		log.Fatal("USAGE: ", os.Args[0], " sk NAME REGTOKEN")
 	}
 	sk, err := sgp.LoadSecretKeyFromFile(os.Args[1])

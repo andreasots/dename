@@ -17,6 +17,8 @@ import (
 	"time"
 )
 
+var ErrRejected = errors.New("Server refused to transfer the name")
+
 type Cfg struct {
 	Peer map[string]*struct {
 		PublicKey string
@@ -231,8 +233,14 @@ func (dnmc *DenameClient) Accept(sk *sgp.SecretKey, xfer []byte) (err error) {
 		panic(err)
 	}
 	signed_accept_bs := sk.Sign(accept_bs, protocol.SIGN_TAG_ACCEPT)
-	_, err = dnmc.roundTrip(&protocol.C2SMessage{Transfer: signed_accept_bs})
-	return
+	response, err := dnmc.roundTrip(&protocol.C2SMessage{Transfer: signed_accept_bs})
+	if err != nil {
+		return
+	}
+	if !response.GetTransferLooksGood() {
+		return ErrRejected
+	}
+	return nil
 }
 
 func Accept(sk *sgp.SecretKey, signed_transfer []byte) error {
@@ -254,10 +262,16 @@ func (dnmc *DenameClient) Register(sk *sgp.SecretKey, name, regtoken_b64 string)
 	if err != nil {
 		panic(err)
 	}
-	_, err = dnmc.roundTrip(&protocol.C2SMessage{
+	response, err := dnmc.roundTrip(&protocol.C2SMessage{
 		Transfer: sk.Sign(accept_bs, protocol.SIGN_TAG_ACCEPT),
 		RegToken: regtoken})
-	return err
+	if err != nil {
+		return err
+	}
+	if !response.GetTransferLooksGood() {
+		return ErrRejected
+	}
+	return nil
 }
 
 func Register(sk *sgp.SecretKey, name, regtoken string) error {

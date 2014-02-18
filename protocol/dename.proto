@@ -20,6 +20,7 @@ message C2SMessage {
 
 message S2CMessage {
 	optional bytes root = 1;
+	optional bool transfer_looks_good = 2;
 	optional LookupResponse lookup_response = 3;
 	repeated bytes freshness_assertions = 4; // signed FreshnessAssertions
 }

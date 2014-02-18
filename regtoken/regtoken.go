@@ -171,5 +171,5 @@ func main() {
 	}
 	http.HandleFunc("/", rootHandler)
 	http.HandleFunc("/success.html", staticHandler)
-	http.ListenAndServe(":80", nil)
+	panic(http.ListenAndServe(":80", nil))
 }
