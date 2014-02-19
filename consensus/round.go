@@ -37,6 +37,7 @@ type round struct {
 	requests map[int64]*[][]byte           // populated by key handler decryptor (us: rq handler)
 	pushes   map[int64]map[[24]byte][]byte // populated by push handler (us: rq handler)
 	commited map[int64]*[]byte             // set by commitment handler
+	acked    map[int64]*[]byte             // set by acknowledgement handler
 
 	our_round_key *[32]byte  // const
 	shared_prng   *prng.PRNG // pointer set at the end of key handler after
@@ -57,12 +58,14 @@ func newRound(id int64, t time.Time, c *Consensus) (r *round) {
 	r.requests = make(map[int64]*[][]byte, len(r.c.Peers))
 	r.pushes = make(map[int64]map[[24]byte][]byte, len(r.c.Peers))
 	r.commited = make(map[int64]*[]byte, len(r.c.Peers))
+	r.acked = make(map[int64]*[]byte, len(r.c.Peers))
 	r.our_round_key = new([32]byte)
 
 	for id := range c.Peers {
 		r.requests[id] = new([][]byte)
 		r.pushes[id] = make(map[[24]byte][]byte)
 		r.commited[id] = new([]byte)
+		r.acked[id] = new([]byte)
 	}
 	*r.requests[r.c.our_id] = make([][]byte, 0)
 
@@ -143,9 +146,11 @@ func (r *round) Process() {
 
 	<-r.afterCommitments
 	log.Printf("round %v: got commitments", r.id)
+	r.acknowledgeCommitments()
 	r.c.router.Close(r.id, PUSH)
 	<-r.afterAcknowledgements
 	log.Printf("round %v: got acks", r.id)
+	r.checkAcknowledgements()
 
 	r.startHandlingPublishes()
 	r.revealRoundKey()
@@ -211,6 +216,7 @@ func (r *round) commitToQueue() {
 	our_id := r.c.our_id
 	qh := HashCommitData(r.id, our_id, r.our_round_key[:], r.pushes[our_id])
 	log.Printf("queue hash: %v, %x", len(r.pushes[our_id]), qh)
+	*r.commited[r.c.our_id] = qh
 	commitment_bs, err := proto.Marshal(&Commitment{
 		Round: &r.id, Server: &our_id, Hash: qh})
 	if err != nil {
@@ -221,57 +227,38 @@ func (r *round) commitToQueue() {
 	r.c.broadcast(s2s)
 }
 
-// checkCommitmentUnique checks that a commitment is valid and the peer has
-// not commited to anything else in this round
-func (r *round) checkCommitmentUnique(peer_id int64, signed_bs []byte) {
-	peer := r.c.Peers[peer_id]
-	commitment_bs, err := peer.PK().Verify(signed_bs, r.c.sign_tags[COMMITMENT])
-	if err != nil {
-		log.Fatalf("peer.PK().Verify(bs, r.c.sign_tags[COMMITMENT]): %s", err)
-	}
-	commitment := new(Commitment)
-	if err := proto.Unmarshal(commitment_bs, commitment); err != nil {
-		log.Fatalf("proto.Unmarshal(commitment_bs, commitment): %s", err)
-	}
-	if *commitment.Round != r.id || *commitment.Server != peer_id {
-		log.Fatalf("Inconsistently labelled commitment")
-	}
-	if peer_id != r.c.our_id {
-		if *r.commited[peer_id] == nil {
-			*r.commited[peer_id] = commitment.Hash
-		} else if !bytes.Equal(*r.commited[peer_id], commitment.Hash) {
-			log.Fatalf("Multiple different commitments from %d: %v and %v", peer_id, *r.commited[peer_id], commitment.Hash)
-		}
-	}
-}
-
-// startHandlingCommitments acknowledges commitments
+// startHandlingCommitments accepts commitments
 // received from other servers. As a server may start processing a round as soon
 // as it finalizes the previous one, a round calls startHandlingCommitments on
 // the next one right before sending out the last message other servers have to
 // wait for.
 func (r *round) startHandlingCommitments() {
-	ack := &Acknowledgement{Acker: &r.c.our_id}
-	hasCommited := make(map[int64]struct{})
+	remaining := len(r.c.Peers) - 1
 	r.c.router.Receive(r.id, COMMITMENT, func(msg *ConsensusMSG) bool {
-		r.checkCommitmentUnique(*msg.Server, msg.Commitment)
-		hasCommited[*msg.Server] = struct{}{}
-		done := len(hasCommited) == len(r.c.Peers)-1
-		if done {
-			r.startHandlingKeys()
-		}
-		// send an ack
-		ack.Commiter, ack.Commitment = msg.Server, msg.Commitment
-		ack_bs, err := proto.Marshal(ack)
+		commitment_bs, err := r.c.Peers[*msg.Server].PK().Verify(
+			msg.Commitment, r.c.sign_tags[COMMITMENT])
 		if err != nil {
-			panic(err)
+			log.Fatalf("peer.PK().Verify(bs, r.c.sign_tags[COMMITMENT]): %s", err)
 		}
-		signed_ack_bs := r.c.our_sk.Sign(ack_bs, r.c.sign_tags[ACKNOWLEDGEMENT])
-		r.c.broadcast(&ConsensusMSG{Round: msg.Round, Ack: signed_ack_bs})
-		if done {
+		commitment := new(Commitment)
+		if err := proto.Unmarshal(commitment_bs, commitment); err != nil {
+			log.Fatalf("proto.Unmarshal(commitment_bs, commitment): %s", err)
+		}
+		if *commitment.Round != r.id || *commitment.Server != *msg.Server {
+			log.Fatalf("Inconsistently labelled commitment")
+		}
+		if *r.commited[*msg.Server] == nil {
+			*r.commited[*msg.Server] = commitment.Hash
+			remaining--
+		} else if !bytes.Equal(*r.commited[*msg.Server], commitment.Hash) {
+			log.Fatalf("Multiple different commitments from %d: %v and %v", *msg.Server, commitment.Hash)
+		}
+		if remaining == 0 {
+			r.startHandlingKeys()
 			close(r.afterCommitments)
+			return true
 		}
-		return done
+		return false
 	})
 }
 
@@ -279,43 +266,53 @@ func (r *round) startHandlingCommitments() {
 // Called together with startHandlingCommitments because as soon as a commitment
 // is sent out, acknowledgements from all servers should follow.
 func (r *round) startHandlingAcknowledgements() {
-	acknowledgersRemaining := len(r.c.Peers) - 1 // don't track our own acks
-	hasAcked := make(map[int64]map[int64]struct{})
-	for id := range r.c.Peers {
-		if id != r.c.our_id {
-			hasAcked[id] = make(map[int64]struct{})
-		}
-	}
-	ack := new(Acknowledgement)
+	remaining := len(r.c.Peers) - 1
 	r.c.router.Receive(r.id, ACKNOWLEDGEMENT, func(msg *ConsensusMSG) bool {
 		peer := r.c.Peers[*msg.Server]
 		ack_bs, err := peer.PK().Verify(msg.Ack, r.c.sign_tags[ACKNOWLEDGEMENT])
 		if err != nil {
 			log.Fatalf("peer.PK().Verify(msg.Ack, r.c.sign_tags[ACKNOWLEDGEMENT]): %s", err)
 		}
+		ack := new(Acknowledgement)
 		if err := proto.Unmarshal(ack_bs, ack); err != nil {
 			log.Fatalf("proto.Unmarshal(ack_bs, ack): %s", err)
 		}
-		if *msg.Server != *ack.Acker {
-			log.Fatalf("Peer %d acked as %d", *msg.Server, *ack.Acker)
+		if *msg.Server != *ack.Server {
+			log.Fatalf("Peer %d acked as %d", *msg.Server, *ack.Server)
 		}
-		if *ack.Commiter == *ack.Acker {
-			log.Printf("Peer %d acked themselves", *msg.Server)
-			return false
+		if *r.acked[*msg.Server] == nil {
+			*r.acked[*msg.Server] = ack.HashOfCommitments
+			remaining--
+		} else if !bytes.Equal(*r.acked[*msg.Server], ack.HashOfCommitments) {
+			log.Fatalf("Multiple different acks from %d: %v and %v", *msg.Server, *r.acked[*msg.Server], ack.HashOfCommitments)
 		}
-		r.checkCommitmentUnique(*ack.Commiter, ack.Commitment)
-		if _, already := hasAcked[*ack.Acker][*ack.Commiter]; !already {
-			hasAcked[*ack.Acker][*ack.Commiter] = struct{}{}
-			if len(hasAcked[*ack.Acker]) == len(r.c.Peers)-1 {
-				acknowledgersRemaining--
-			}
-		}
-		done := acknowledgersRemaining == 0
-		if done {
+		if remaining == 0 {
 			close(r.afterAcknowledgements)
+			return true
 		}
-		return done
+		return false
 	})
+}
+
+func (r *round) acknowledgeCommitments() {
+	ack := &Acknowledgement{Round: &r.id, Server: &r.c.our_id,
+		HashOfCommitments: HashAckData(r.commited)}
+	*r.acked[r.c.our_id] = ack.HashOfCommitments
+	ack_bs, err := proto.Marshal(ack)
+	if err != nil {
+		panic(err)
+	}
+	signed_ack_bs := r.c.our_sk.Sign(ack_bs, r.c.sign_tags[ACKNOWLEDGEMENT])
+	r.c.broadcast(&ConsensusMSG{Round: &r.id, Ack: signed_ack_bs})
+}
+
+func (r *round) checkAcknowledgements() {
+	h0 := *r.acked[r.c.our_id]
+	for id, h := range r.acked {
+		if !bytes.Equal(*h, h0) {
+			log.Fatal("We acked %x but %v acked %x", h0, id, *h)
+		}
+	}
 }
 
 func (r *round) revealRoundKey() {
@@ -493,6 +490,18 @@ func HashCommitData(round, commiter int64, key []byte,
 	}
 	h := sha256.New()
 	h.Write(commit_data_bytes)
+	return h.Sum(nil)
+}
+
+func HashAckData(commited map[int64]*[]byte) []byte {
+	peer_ids := make([]int, 0, len(commited))
+	for id := range commited {
+		peer_ids = append(peer_ids, int(id))
+	}
+	h := sha256.New()
+	for _, id := range peer_ids {
+		h.Write(*commited[int64(id)])
+	}
 	return h.Sum(nil)
 }
 

@@ -25,9 +25,9 @@ message Commitment {
 }
 
 message Acknowledgement {
-	required int64 commiter = 1;
-	required int64 acker = 2;
-	required bytes commitment  = 3;  // Commitment signed by commiter
+	required int64 server = 1;
+	required int64 round = 2;
+	required bytes hash_of_commitments  = 3;
 }
 
 message Result {

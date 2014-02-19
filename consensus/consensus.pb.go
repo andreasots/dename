@@ -151,33 +151,33 @@ func (m *Commitment) GetHash() []byte {
 }
 
 type Acknowledgement struct {
-	Commiter         *int64 `protobuf:"varint,1,req,name=commiter" json:"commiter,omitempty"`
-	Acker            *int64 `protobuf:"varint,2,req,name=acker" json:"acker,omitempty"`
-	Commitment       []byte `protobuf:"bytes,3,req,name=commitment" json:"commitment,omitempty"`
-	XXX_unrecognized []byte `json:"-"`
+	Server            *int64 `protobuf:"varint,1,req,name=server" json:"server,omitempty"`
+	Round             *int64 `protobuf:"varint,2,req,name=round" json:"round,omitempty"`
+	HashOfCommitments []byte `protobuf:"bytes,3,req,name=hash_of_commitments" json:"hash_of_commitments,omitempty"`
+	XXX_unrecognized  []byte `json:"-"`
 }
 
 func (m *Acknowledgement) Reset()         { *m = Acknowledgement{} }
 func (m *Acknowledgement) String() string { return proto.CompactTextString(m) }
 func (*Acknowledgement) ProtoMessage()    {}
 
-func (m *Acknowledgement) GetCommiter() int64 {
-	if m != nil && m.Commiter != nil {
-		return *m.Commiter
+func (m *Acknowledgement) GetServer() int64 {
+	if m != nil && m.Server != nil {
+		return *m.Server
 	}
 	return 0
 }
 
-func (m *Acknowledgement) GetAcker() int64 {
-	if m != nil && m.Acker != nil {
-		return *m.Acker
+func (m *Acknowledgement) GetRound() int64 {
+	if m != nil && m.Round != nil {
+		return *m.Round
 	}
 	return 0
 }
 
-func (m *Acknowledgement) GetCommitment() []byte {
+func (m *Acknowledgement) GetHashOfCommitments() []byte {
 	if m != nil {
-		return m.Commitment
+		return m.HashOfCommitments
 	}
 	return nil
 }
