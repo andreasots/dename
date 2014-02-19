@@ -146,6 +146,7 @@ func (r *round) Process() {
 
 	<-r.afterCommitments
 	log.Printf("round %v: got commitments", r.id)
+	r.startHandlingKeys()
 	r.acknowledgeCommitments()
 	r.c.router.Close(r.id, PUSH)
 	<-r.afterAcknowledgements
@@ -254,7 +255,6 @@ func (r *round) startHandlingCommitments() {
 			log.Fatalf("Multiple different commitments from %d: %v and %v", *msg.Server, commitment.Hash)
 		}
 		if remaining == 0 {
-			r.startHandlingKeys()
 			close(r.afterCommitments)
 			return true
 		}
