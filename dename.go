@@ -113,6 +113,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Cannot open database: %s", err)
 	}
+	dn.db.SetMaxOpenConns(cfg.Database.MaxConnections)
 	defer dn.db.Close()
 	dn.CreateTables()
 
@@ -434,7 +435,7 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 			log.Fatalf("dn.db.Begin(): %s", err)
 		}
 
-		reset_modified, err := tx.Prepare(`DELETE from last_modified WHERE name = $1`)
+		reset_modified, err := tx.Prepare(`DELETE from last_modified WHERE name = $1;`)
 		if err != nil {
 			log.Fatalf("PREPARE reset_modified: %s", err)
 		}
@@ -482,17 +483,23 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 		if err != nil {
 			log.Fatalf("last modified: %s", err)
 		}
-		defer rows.Close()
+		names := make([][]byte, 0)
 		for rows.Next() {
 			var name []byte
 			if err := rows.Scan(&name); err != nil {
 				log.Fatalf("last_modified[i].Scan(&name): %s", err)
 			}
-			if err = mapHandle.Delete(merklemap.Hash(name)); err != nil {
-				log.Fatalf("mapHandle.Delete(name): %s", err)
-			}
+			names = append(names, name)
+		}
+		rows.Close() // close before reusing tx due to postgres protocol
+
+		for _, name := range names {
+			log.Printf("mapHandle.Delete(merklemap.Hash(\"%s\"))", name)
+			// if err = mapHandle.Delete(merklemap.Hash(name)); err != nil {
+			//	log.Fatalf("mapHandle.Delete(name): %s", err)
+			// }
 			if _, err := reset_modified.Exec(name); err != nil {
-				log.Fatalf("reset_modified.Exec(name): %s", err)
+				log.Fatalf("expiration: reset_modified.Exec(\"%s\"): %s", name, err)
 			}
 		}
 
