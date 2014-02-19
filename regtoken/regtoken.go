@@ -25,6 +25,8 @@ var our_sk sgp.SecretKey
 var db *sql.DB
 var errQuota = errors.New("This address has already been sent a registration token.")
 
+const emailUserRegex = "[a-z0-9!#$%&'*+/=?^_`{|}~-]+(\\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*"
+
 type EmailRule struct {
 	Pattern     string
 	handler     func(addr string) error
@@ -93,37 +95,42 @@ func mitKerberosHandler(email string) error {
 }
 
 var allowedEmails = []EmailRule{
-	{`.*@mit\.edu`, mitKerberosHandler, "MIT Kerberos accounts"},
-	{`.*@college\.harvard\.edu`, validatedEmailHandler, ""},
-	{`.*@fsfe\.org`, validatedEmailHandler, ""},
-	{`.*@member\.fsf\.org `, validatedEmailHandler, ""},
-	{`.*@eesti\.ee`, validatedEmailHandler, ""},
-	{`.*@riseup\.net`, validatedEmailHandler, ""},
-	{`.*@anche\.no`, validatedEmailHandler, ""},
-	{`.*@autistiche\.org`, validatedEmailHandler, ""},
-	{`.*@autistici\.org`, validatedEmailHandler, ""},
-	{`.*@autoproduzioni\.net`, validatedEmailHandler, ""},
-	{`.*@bastardi\.net`, validatedEmailHandler, ""},
-	{`.*@bruttocarattere\.org`, validatedEmailHandler, ""},
-	{`.*@canaglie\.net`, validatedEmailHandler, ""},
-	{`.*@canaglie\.org`, validatedEmailHandler, ""},
-	{`.*@cryptolab\.net`, validatedEmailHandler, ""},
-	{`.*@distruzione\.org`, validatedEmailHandler, ""},
-	{`.*@grrlz\.net`, validatedEmailHandler, ""},
-	{`.*@hacari\.com`, validatedEmailHandler, ""},
-	{`.*@hacari\.net`, validatedEmailHandler, ""},
-	{`.*@hacari\.org`, validatedEmailHandler, ""},
-	{`.*@insiberia\.net`, validatedEmailHandler, ""},
-	{`.*@insicuri\.net`, validatedEmailHandler, ""},
-	{`.*@inventati\.org`, validatedEmailHandler, ""},
-	{`.*@krutt\.org`, validatedEmailHandler, ""},
-	{`.*@logorroici\.org`, validatedEmailHandler, ""},
-	{`.*@mortemale\.org`, validatedEmailHandler, ""},
-	{`.*@onenetbeyond\.org`, validatedEmailHandler, ""},
-	{`.*@paranoici\.org`, validatedEmailHandler, ""},
-	{`.*@privacyrequired\.com`, validatedEmailHandler, ""},
-	{`.*@stronzi\.org`, validatedEmailHandler, ""},
-	{`.*@subvertising\.org`, validatedEmailHandler, ""},
+	{`*@mit.edu`, mitKerberosHandler, "MIT Kerberos accounts"},
+	{`*@college.harvard.edu`, validatedEmailHandler, ""},
+	{`*@fsfe.org`, validatedEmailHandler, ""},
+	{`*@member.fsf.org `, validatedEmailHandler, ""},
+	{`*@eesti.ee`, validatedEmailHandler, ""},
+	{`*@riseup.net`, validatedEmailHandler, ""},
+	{`*@anche.no`, validatedEmailHandler, ""},
+	{`*@autistiche.org`, validatedEmailHandler, ""},
+	{`*@autistici.org`, validatedEmailHandler, ""},
+	{`*@autoproduzioni.net`, validatedEmailHandler, ""},
+	{`*@bastardi.net`, validatedEmailHandler, ""},
+	{`*@bruttocarattere.org`, validatedEmailHandler, ""},
+	{`*@canaglie.net`, validatedEmailHandler, ""},
+	{`*@canaglie.org`, validatedEmailHandler, ""},
+	{`*@cryptolab.net`, validatedEmailHandler, ""},
+	{`*@distruzione.org`, validatedEmailHandler, ""},
+	{`*@grrlz.net`, validatedEmailHandler, ""},
+	{`*@hacari.com`, validatedEmailHandler, ""},
+	{`*@hacari.net`, validatedEmailHandler, ""},
+	{`*@hacari.org`, validatedEmailHandler, ""},
+	{`*@insiberia.net`, validatedEmailHandler, ""},
+	{`*@insicuri.net`, validatedEmailHandler, ""},
+	{`*@inventati.org`, validatedEmailHandler, ""},
+	{`*@krutt.org`, validatedEmailHandler, ""},
+	{`*@logorroici.org`, validatedEmailHandler, ""},
+	{`*@mortemale.org`, validatedEmailHandler, ""},
+	{`*@onenetbeyond.org`, validatedEmailHandler, ""},
+	{`*@paranoici.org`, validatedEmailHandler, ""},
+	{`*@privacyrequired.com`, validatedEmailHandler, ""},
+	{`*@stronzi.org`, validatedEmailHandler, ""},
+	{`*@subvertising.org`, validatedEmailHandler, ""},
+}
+
+func match(rule EmailRule, email string) bool {
+	rgx := emailUserRegex + strings.Replace(rule.Pattern[1:], `.`, `\.`, -1)
+	return regexp.MustCompilePOSIX(rgx).Match([]byte(email))
 }
 
 func rootHandler(w http.ResponseWriter, r *http.Request) {
@@ -132,7 +139,7 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 		templates.ExecuteTemplate(w, "index.html", allowedEmails)
 	} else {
 		for _, rule := range allowedEmails {
-			if regexp.MustCompilePOSIX(rule.Pattern).Match([]byte(email)) {
+			if match(rule, email) {
 				if err := rule.handler(email); err != nil {
 					log.Printf("Error: %s", err)
 					templates.ExecuteTemplate(w, "error.html", err)
