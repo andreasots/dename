@@ -21,7 +21,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	if err := c.Register(&sk, os.Args[2], os.Args[3]); err != nil {
+	if err := c.Register(&sk, os.Args[3], os.Args[2]); err != nil {
 		log.Fatal(err)
 	}
 }
