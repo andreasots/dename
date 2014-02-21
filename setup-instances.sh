@@ -22,7 +22,7 @@ setup_instance() {
 	dbname=$(grep -Pzo '\[database\]\n(.+\n)*name\s*=\s*\K.+' "$dir/$1/dename.cfg")
 	dbuser=$(grep -Pzo '\[database\]\n(.+\n)*user\s*=\s*\K.+' "$dir/$1/dename.cfg")
 	dbpw=$(grep -Pzo '\[database\]\n(.+\n)*password\s*=\s*\K.+' "$dir/$1/dename.cfg")
-	pk=$(go run $GOPATH/src/github.com/andres-erbsen/sgp/keygen/keygen.go 2>"$dir/$1/sk" | tee "$dir/$1/pk" | base64 | tr -d '\n')
+	pk=$(keygen 2>"$dir/$1/sk" | tee "$dir/$1/pk" | base64 | tr -d '\n')
 	echo "
 [peer \"$1\"]
 host = $host
