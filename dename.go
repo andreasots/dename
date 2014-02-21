@@ -208,7 +208,9 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 	var round int64
 	err = dn.db.QueryRow(`SELECT id, signed_result FROM rounds WHERE
 	signed_result is not NULL ORDER BY id DESC`).Scan(&round, &reply.Root)
-	if err != nil {
+	if err == sql.ErrNoRows {
+		return
+	} else if err != nil {
 		log.Fatalf("SELECT last signed round: %s", err)
 	}
 
