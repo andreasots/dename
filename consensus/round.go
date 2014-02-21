@@ -137,27 +137,30 @@ func (r *round) ColdStart() {
 // still the case that they have proceeded: they may be processing round i+1 and
 // accepting requests for i+2 and pushing them to us.
 func (r *round) Process() {
+	if time.Now().After(r.openAtLeastUntil) {
+		log.Printf("round %d processing started LATE!", r.id)
+	}
 	time.Sleep(r.openAtLeastUntil.Sub(time.Now()))
-	log.Printf("processing round %v", r.id)
+	// log.Printf("processing round %v", r.id)
 	r.afterRequests <- struct{}{}
 	close(r.afterRequests)
 	go r.next.acceptRequests(r.c.IncomingRequests)
 	r.commitToQueue()
 
 	<-r.afterCommitments
-	log.Printf("round %v: got commitments", r.id)
+	// log.Printf("round %v: got commitments", r.id)
 	r.startHandlingKeys()
 	r.acknowledgeCommitments()
 	r.c.router.Close(r.id, PUSH)
 	<-r.afterAcknowledgements
-	log.Printf("round %v: got acks", r.id)
+	// log.Printf("round %v: got acks", r.id)
 	r.checkAcknowledgements()
 
 	r.startHandlingPublishes()
 	r.revealRoundKey()
 
 	<-r.afterKeys
-	log.Printf("round %v: got keys", r.id)
+	// log.Printf("round %v: got keys", r.id)
 	for _, rqs := range r.requests {
 		sort.Sort(ByteSlices(*rqs))
 	}
@@ -169,7 +172,7 @@ func (r *round) Process() {
 	r.Publish(canonical_result, aux_result)
 
 	<-r.afterPublishes
-	log.Printf("round %v: got publishes", r.id)
+	// log.Printf("round %v: got publishes", r.id)
 	go r.next.Process()
 }
 
@@ -216,7 +219,7 @@ func (r *round) startAcceptingPushes() {
 func (r *round) commitToQueue() {
 	our_id := r.c.our_id
 	qh := HashCommitData(r.id, our_id, r.our_round_key[:], r.pushes[our_id])
-	log.Printf("queue hash: %v, %x", len(r.pushes[our_id]), qh)
+	// log.Printf("queue hash: %v, %x", len(r.pushes[our_id]), qh)
 	*r.commited[r.c.our_id] = qh
 	commitment_bs, err := proto.Marshal(&Commitment{
 		Round: &r.id, Server: &our_id, Hash: qh})
