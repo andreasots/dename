@@ -13,15 +13,15 @@ func main() {
 	}
 	sk, err := sgp.LoadSecretKeyFromFile(os.Args[1])
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("LoadSecretKeyFromFile: ", err)
 	}
 
-	c, err := dnmclient.NewFromFile("run/dnmlookup.cfg", nil)
+	c, err := dnmclient.NewFromFile("dnmlookup.cfg", nil)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("NewFromFile: ", err)
 	}
 
 	if err := c.Register(&sk, os.Args[3], os.Args[2]); err != nil {
-		log.Fatal(err)
+		log.Fatal("Register: ", err)
 	}
 }
