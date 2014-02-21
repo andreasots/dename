@@ -12,7 +12,7 @@ if [[ -z "$targetuser" ]]; then
 fi
 
 n=1000
-for P in 1 4 16 64 256; do
+for P in 64 1 4 16 256; do
 	for k in 2 4 8 16 32 64 128 256; do
 		dir="bench_k${k}P${P}"
 		mkdir "$dir"
@@ -32,9 +32,8 @@ for P in 1 4 16 64 256; do
 
 		sleep 1
 
-		echo "perflock ../benchmarkthis.sh $n $P # $k servers" 
-		sudo -u "$targetuser" -- perflock ../benchmarkthis.sh "$n" "$P"
-		# sudo -u "$targetuser" -- ../benchmarkthis.sh "$n" "$P"
+		echo "../benchmarkthis.sh $n $P # $k servers" 
+		sudo -u "$targetuser" -- ../benchmarkthis.sh "$n" "$P"
 
 		# stop the servers...
 		for pid in "${servers[@]}"; do
