@@ -296,7 +296,8 @@ func (dn *Dename) HandleClientTransfer(reply *protocol.S2CMessage, regtoken, rq_
 		}
 		_, err = dn.db.Exec(`INSERT INTO used_tokens(nonce) VALUES($1)`, nonce)
 		if pgutil.IsError(err, pgutil.ErrUniqueViolation) {
-			return
+			// FIXME: uncomment the next line to use ticketer to rate-limit registrations
+			// return
 		} else if err != nil {
 			log.Fatalf("Lookup hash from blacklist: %s", err)
 		}
@@ -434,6 +435,11 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 		if err != nil {
 			log.Fatalf("dn.db.Begin(): %s", err)
 		}
+		defer func() {
+			if err := tx.Commit(); err != nil {
+				log.Fatalf("Commit last_modified and root: %s", err)
+			}
+		}()
 
 		reset_modified, err := tx.Prepare(`DELETE from last_modified WHERE name = $1;`)
 		if err != nil {
@@ -518,9 +524,6 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 		if err != nil {
 			log.Fatalf("INSERT round %d snapshot %d: %s", round, newNaming.GetId(), err)
 		}
-		if err := tx.Commit(); err != nil {
-			log.Fatalf("Commit last_modified and root: %s", err)
-		}
 
 		dn.lockednames_mutex.Lock()
 		for _, rq_bs := range *peer_rq_map[dn.us.id] {
@@ -561,7 +564,7 @@ func (dn *Dename) MaintainFreshness(t0 time.Time, dt time.Duration) {
 		var rootHash []byte
 		round := int64(-1)
 		err := dn.db.QueryRow(`SELECT id, result FROM rounds WHERE
-		result is not NULL ORDER BY id DESC`).Scan(&round, &rootHash)
+		signed_result is not NULL ORDER BY id DESC`).Scan(&round, &rootHash)
 		if err != nil && err != sql.ErrNoRows {
 			log.Fatalf("SELECT last signed round: %s", err)
 		}
@@ -596,7 +599,7 @@ func (dn *Dename) FreshnessReceived(peer_id int64, freshness_signed_bs []byte) {
 	err = dn.db.QueryRow(`SELECT id FROM rounds WHERE result = $1
 		ORDER BY id DESC LIMIT 1`, freshness.Root).Scan(&round)
 	if err != nil {
-		log.Fatalf("SELECT snapshot for freshness: %s", err)
+		log.Fatalf("SELECT round for freshness: %s (root %x)", err, freshness.Root)
 	}
 	_, err = dn.db.Exec(`INSERT INTO auxresults(round,sender,result)
 		VALUES($1,$2,$3)`, round, peer_id, freshness_signed_bs)
