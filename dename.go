@@ -18,6 +18,8 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"sort"
@@ -91,6 +93,9 @@ type Cfg struct {
 }
 
 func main() {
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
 	go func() {
 		ch := make(chan os.Signal)
 		signal.Notify(ch, os.Interrupt)
