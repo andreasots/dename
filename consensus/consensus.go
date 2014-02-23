@@ -21,7 +21,7 @@ import (
 // QueueProcessor :: Map Server [Request] -> Rand -> Int64 -> CanonicalState -> (CanonicalState, AuxiliaryData)
 type QueueProcessor func(map[int64]*[][]byte, *prng.PRNG, int64) ([]byte, []byte)
 
-type Peer_ interface {
+type Peer interface {
 	ConsensusSend([]byte) error
 	PK() *sgp.Entity
 }
@@ -35,12 +35,15 @@ type Consensus struct {
 	TickInterval   time.Duration
 
 	router    *Router
-	Peers     map[int64]Peer_
+	Peers     map[int64]Peer
+	peer_ids  []int64
 	sign_tags map[int]uint64 // COMMITMENT, ACKNOWLEDGEMENT, PUBLISH -> tag
 
 	IncomingRequests chan []byte
 	// Actually channels of *ConsensusMSG
 	incomingMessagesIn, incomingMessagesNext chan interface{}
+
+	round_completion_callback func(*RoundSummary) bool
 }
 
 type serialized_msg struct {
@@ -50,8 +53,8 @@ type serialized_msg struct {
 
 func NewConsensus(db *sql.DB, our_sk *sgp.SecretKey, our_id int64,
 	queueProcessor QueueProcessor, genesisTime time.Time,
-	tickInterval time.Duration, peers map[int64]Peer_,
-	sign_tags map[int]uint64) *Consensus {
+	tickInterval time.Duration, peers map[int64]Peer, peer_ids []int64,
+	callback func(*RoundSummary) bool, sign_tags map[int]uint64) *Consensus {
 	c := new(Consensus)
 	c.db = db
 	c.our_sk = our_sk
@@ -61,8 +64,10 @@ func NewConsensus(db *sql.DB, our_sk *sgp.SecretKey, our_id int64,
 	c.genesisTime = genesisTime
 	c.router = newRouter()
 	c.Peers = peers
+	c.peer_ids = peer_ids
 	c.sign_tags = sign_tags
-	c.IncomingRequests = make(chan []byte)
+	c.IncomingRequests = make(chan []byte, 10)
+	c.round_completion_callback = callback
 
 	c.incomingMessagesIn = make(chan interface{})
 	c.incomingMessagesNext = make(chan interface{})
@@ -126,6 +131,37 @@ func (c *Consensus) RefreshPeer(id int64) (err error) {
 	return nil
 }
 
+// LastRoundCompleted returns everything in last RoundSummary EXCEPT requests
+func (c *Consensus) LastRoundCompleted() (ret *RoundSummary) {
+	ret = &RoundSummary{AuxResults: make(map[int64]*[]byte, len(c.peer_ids))}
+	var close_time_u int64
+	err := c.db.QueryRow(`SELECT id, result, signed_result, close_time FROM
+		rounds WHERE result IS NOT NULL ORDER BY id DESC LIMIT 1`).Scan(
+		&ret.Id, &ret.Result, &ret.SignedResult, &close_time_u)
+	if err == sql.ErrNoRows {
+		ret.Id = -1
+	} else if err != nil {
+		log.Fatalf("SELECT last published round: %s", err)
+	}
+	ret.OpenAtLeastUntil = time.Unix(close_time_u, 0)
+
+	rows, err := c.db.Query(`SELECT DISTINCT ON (sender) sender, result FROM
+		auxresults WHERE round = $1 ORDER BY sender, id DESC`, ret.Id)
+	if err != nil {
+		log.Fatalf("Cannot load auxresults: %s", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var peer_id int64
+		aux_bs := make([]byte, 0)
+		if err := rows.Scan(&peer_id, &aux_bs); err != nil {
+			log.Fatalf("msg from db: rows.Scan(&assertion_bs): %s", err)
+		}
+		ret.AuxResults[peer_id] = &aux_bs
+	}
+	return
+}
+
 func (c *Consensus) Run() {
 	rows, err := c.db.Query(`SELECT id, close_time FROM rounds
 		WHERE signed_result IS NULL ORDER BY id`)
@@ -154,7 +190,7 @@ func (c *Consensus) Run() {
 	rows.Close()
 
 	round := newRound(id, t, c)
-	round.next = newRound(round.id+1, t.Add(c.TickInterval), c)
+	round.next = newRound(round.Id+1, t.Add(c.TickInterval), c)
 	c.reloadRequests(round)
 	c.reloadRequests(round.next)
 	round.ColdStart()
@@ -171,9 +207,9 @@ func (c *Consensus) Run() {
 
 func (c *Consensus) reloadRequests(r *round) {
 	rows, err := c.db.Query(`SELECT message FROM messages
-		WHERE round = $1 AND sender = $2 AND type = $3 ORDER BY id ASC`, r.id, c.our_id, PUSH)
+		WHERE round = $1 AND sender = $2 AND type = $3 ORDER BY id ASC`, r.Id, c.our_id, PUSH)
 	if err != nil {
-		log.Fatalf("Cannot load outgoing pushes for round %d: %s", r.id, err)
+		log.Fatalf("Cannot load outgoing pushes for round %d: %s", r.Id, err)
 	}
 	defer rows.Close()
 	var msg_bs []byte
@@ -185,7 +221,7 @@ func (c *Consensus) reloadRequests(r *round) {
 		}
 		err = proto.Unmarshal(msg_bs, msg)
 		if err != nil {
-			log.Fatalf("reloadRequests(%d): proto.Unmarshal(msg_bs, msg): %s", r.id, err)
+			log.Fatalf("reloadRequests(%d): proto.Unmarshal(msg_bs, msg): %s", r.Id, err)
 		}
 		rq_box := msg.PushQueue
 		var nonce [24]byte
@@ -193,9 +229,9 @@ func (c *Consensus) reloadRequests(r *round) {
 		r.pushes[c.our_id][nonce] = rq_box
 		rq, ok := secretbox.Open(nil, rq_box[24:], &nonce, r.our_round_key)
 		if !ok {
-			log.Fatalf("reloadRequests(%d): Failed to decrypt our queue %x key %x", r.id, rq_box, *r.our_round_key)
+			log.Fatalf("reloadRequests(%d): Failed to decrypt our queue %x key %x", r.Id, rq_box, *r.our_round_key)
 		}
-		*r.requests[c.our_id] = append(*r.requests[c.our_id], rq)
+		*r.Requests[c.our_id] = append(*r.Requests[c.our_id], rq)
 	}
 }
 
