@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"code.google.com/p/gcfg"
 	"code.google.com/p/goprotobuf/proto"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/binary"
@@ -16,6 +18,7 @@ import (
 	"github.com/andres-erbsen/sgp"
 	"github.com/daniel-ziegler/merklemap"
 	"io"
+	"io/ioutil"
 	"log"
 	"math/rand"
 	"net"
@@ -59,7 +62,7 @@ type Dename struct {
 
 	freshnessThreshold int64
 	expirationTicks    int64
-	ticketer_pk        *sgp.Entity
+	regtoken_mac_key   []byte
 
 	// mutable state:
 	round_completed struct {
@@ -107,7 +110,7 @@ type Cfg struct {
 	Clients struct {
 		Host               string
 		FreshnessThreshold int64
-		TicketerPublicKey  string
+		RegTokenMacKeyFile string
 	}
 }
 
@@ -129,7 +132,6 @@ func main() {
 	dn := &Dename{peers: make(map[int64]*Peer, len(cfg.Peer)),
 		addr2peer:          make(map[string]*Peer, len(cfg.Peer)),
 		lockednames:        make(map[string]struct{}),
-		ticketer_pk:        new(sgp.Entity),
 		expirationTicks:    cfg.Naming.ExpirationTicks,
 		freshnessThreshold: cfg.Clients.FreshnessThreshold,
 	}
@@ -162,6 +164,11 @@ func main() {
 		log.Fatalf("Load secret key from \"sk\": %s", err)
 	}
 
+	dn.regtoken_mac_key, err = ioutil.ReadFile(cfg.Clients.RegTokenMacKeyFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	dn.merklemap, err = merklemap.Open(cfg.Naming.File)
 	if err != nil {
 		log.Fatalf("merklemap.Open(cfg.Naming.File): %s", err)
@@ -192,14 +199,6 @@ func main() {
 		if bytes.Equal(dn.our_sk.Entity.Bytes, pk_bs) {
 			dn.us = peer
 		}
-	}
-
-	ticketer_pk_bs, err := base64.StdEncoding.DecodeString(cfg.Clients.TicketerPublicKey)
-	if err != nil {
-		log.Fatalf("Bad base64 as public key for ticketer")
-	}
-	if err := dn.ticketer_pk.Parse(ticketer_pk_bs); err != nil {
-		log.Fatalf("Bad pk for ticketer")
 	}
 
 	dn.peer_ids = make([]int64, 0, len(dn.peers))
@@ -371,22 +370,28 @@ func (dn *Dename) HandleClientTransfer(reply *protocol.S2CMessage, round int64,
 	_true, _false := true, false
 	reply.TransferLooksGood = &_false
 	ticket_fresh := make(chan bool)
-	if regtoken != nil {
-		fmt.Printf("(%d, 'verify ticket'),\n", time.Now().UnixNano())
-		nonce, err := dn.ticketer_pk.Verify(regtoken, protocol.SIGN_TAG_PERSONATICKET)
-		if err != nil {
+	for {
+		if len(regtoken) != 32 {
 			regtoken = nil
+			break
+		}
+		fmt.Printf("(%d, 'verify ticket'),\n", time.Now().UnixNano())
+		mac := hmac.New(sha256.New, dn.regtoken_mac_key)
+		mac.Write(regtoken[:16])
+		if !hmac.Equal(mac.Sum(nil), regtoken[16:]) {
+			regtoken = nil
+			break
 		}
 		go func() {
-			_, err = dn.sql_use_regtoken.Exec(nonce)
-			if pgutil.IsError(err, pgutil.ErrUniqueViolation) {
-				ticket_fresh <- false
-			} else if err != nil {
-				log.Fatalf("Lookup hash from blacklist: %s", err)
-			} else {
+			if _, err := dn.sql_use_regtoken.Exec(regtoken[:16]); err == nil {
 				ticket_fresh <- true
+			} else if pgutil.IsError(err, pgutil.ErrUniqueViolation) {
+				ticket_fresh <- false
+			} else {
+				log.Fatalf("Lookup hash from blacklist: %s", err)
 			}
 		}()
+		break
 	}
 	name, old_pk, _, err := dn.ValidateRequest(round+1, rq_bs)
 	if err != nil {
