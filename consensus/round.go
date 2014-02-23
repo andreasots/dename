@@ -313,7 +313,11 @@ func (r *round) checkAcknowledgements() {
 	h0 := *r.acked[r.c.our_id]
 	for id, h := range r.acked {
 		if !bytes.Equal(*h, h0) {
-			log.Fatal("We acked %x but %v acked %x", h0, id, *h)
+			log.Print("The commitments we saw: ")
+			for i, c := range r.commited {
+				log.Printf("  %d: %f", i, c)
+			}
+			log.Fatalf("We acked %x but %v acked %x", h0, id, *h)
 		}
 	}
 }
@@ -501,6 +505,7 @@ func HashAckData(commited map[int64]*[]byte) []byte {
 	for id := range commited {
 		peer_ids = append(peer_ids, int(id))
 	}
+	sort.Ints(peer_ids)
 	h := sha256.New()
 	for _, id := range peer_ids {
 		h.Write(*commited[int64(id)])
