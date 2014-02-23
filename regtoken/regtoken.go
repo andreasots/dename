@@ -1,16 +1,16 @@
 package main
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"errors"
 	"github.com/andres-erbsen/dename/pgutil"
-	dename "github.com/andres-erbsen/dename/protocol"
-	"github.com/andres-erbsen/sgp"
 	"github.com/mqu/openldap"
 	"html/template"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"net/smtp"
@@ -21,7 +21,7 @@ import (
 
 var templates = template.Must(template.ParseFiles("index.html", "success.html", "error.html"))
 var txt_templates = txt_template.Must(txt_template.ParseFiles("body.txt"))
-var our_sk sgp.SecretKey
+var mac_key []byte
 var db *sql.DB
 var errQuota = errors.New("This address has already been sent a registration token.")
 
@@ -41,12 +41,15 @@ func validatedEmailHandler(email string) error {
 	} else if err != nil {
 		log.Fatalf("Lookup hash from blacklist: %s", err)
 	}
-	var nonce [24]byte
-	_, err = rand.Read(nonce[:])
+	nonce := make([]byte, 16)
+	_, err = rand.Read(nonce)
 	if err != nil {
 		return err
 	}
-	ticket := our_sk.SignAmbiguous(nonce[:], dename.SIGN_TAG_PERSONATICKET)
+	mac := hmac.New(sha256.New, mac_key)
+	mac.Write(nonce[:])
+	ticket := append(nonce, mac.Sum(nil)[:16]...)
+	ticket_b64 := base64.StdEncoding.EncodeToString(ticket)
 	c, err := smtp.Dial("outgoing.mit.edu:25")
 	if err != nil {
 		return err
@@ -58,7 +61,6 @@ func validatedEmailHandler(email string) error {
 		return err
 	}
 	defer w.Close()
-	ticket_b64 := base64.StdEncoding.EncodeToString(ticket)
 	args := struct {
 		To     string
 		Ticket string
@@ -159,14 +161,14 @@ func staticHandler(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	var err error
-	our_sk, err = sgp.LoadSecretKeyFromFile("SECRETKEY")
+	mac_key, err = ioutil.ReadFile("SECRETKEY")
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	// sudo sudo -u postgres createuser -P -S -D -R ticketer # ticketpw \n ticketpw
 	// sudo sudo -u postgres createdb ticketing
-	// reset: echo "TRUNCATE blacklist;" | sudo sudo -u postgres psql
+	// reset: echo "TRUNCATE blacklist;" | sudo sudo -u postgres -d ticketing psql
 	db, err = sql.Open("postgres", "user=ticketer password=ticketpw dbname=ticketing sslmode=disable")
 	if err != nil {
 		log.Fatal(err)
