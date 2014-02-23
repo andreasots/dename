@@ -11,9 +11,9 @@ if [[ -z "$targetuser" ]]; then
 	exit 1
 fi
 
-n=1000
-for P in 64 1 4 16 256; do
-	for k in 2 4 8 16 32 64 128 256; do
+n=10000
+for P in 40 80 160; do
+	for k in 2 4 8 16 32 64 75; do
 		dir="bench_k${k}P${P}"
 		mkdir "$dir"
 		./setup-instances.sh "$dir" "$k"
@@ -30,7 +30,7 @@ for P in 64 1 4 16 256; do
 			cd ..
 		done
 
-		sleep 1
+		sleep "$k"
 
 		echo "../benchmarkthis.sh $n $P # $k servers" 
 		sudo -u "$targetuser" -- ../benchmarkthis.sh "$n" "$P"

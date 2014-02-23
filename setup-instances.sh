@@ -6,6 +6,11 @@ then
 	exit 1
 fi
 
+keygen=$(which keygen)
+if [[ -z "$keygen" ]]; then
+	keygen=./keygen
+fi
+
 dir="$1"
 count="$2"
 tmp_peer_config="$(mktemp)"
@@ -22,7 +27,7 @@ setup_instance() {
 	dbname=$(grep -Pzo '\[database\]\n(.+\n)*name\s*=\s*\K.+' "$dir/$1/dename.cfg")
 	dbuser=$(grep -Pzo '\[database\]\n(.+\n)*user\s*=\s*\K.+' "$dir/$1/dename.cfg")
 	dbpw=$(grep -Pzo '\[database\]\n(.+\n)*password\s*=\s*\K.+' "$dir/$1/dename.cfg")
-	pk=$(keygen 2>"$dir/$1/sk" | tee "$dir/$1/pk" | base64 | tr -d '\n')
+	pk=$($keygen 2>"$dir/$1/sk" | tee "$dir/$1/pk" | base64 | tr -d '\n')
 	echo "
 [peer \"$1\"]
 host = $host
