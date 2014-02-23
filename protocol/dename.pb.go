@@ -175,8 +175,9 @@ func (m *LookupResponse) GetPublicKey() []byte {
 
 type FreshnessAssertion struct {
 	Time             *int64 `protobuf:"varint,1,req,name=time" json:"time,omitempty"`
-	Root             []byte `protobuf:"bytes,2,req,name=root" json:"root,omitempty"`
-	Finalized        *bool  `protobuf:"varint,3,opt,name=finalized" json:"finalized,omitempty"`
+	Finalized        *bool  `protobuf:"varint,2,opt,name=finalized" json:"finalized,omitempty"`
+	Round            *int64 `protobuf:"varint,3,req,name=round" json:"round,omitempty"`
+	Root             []byte `protobuf:"bytes,4,req,name=root" json:"root,omitempty"`
 	XXX_unrecognized []byte `json:"-"`
 }
 
@@ -191,18 +192,25 @@ func (m *FreshnessAssertion) GetTime() int64 {
 	return 0
 }
 
-func (m *FreshnessAssertion) GetRoot() []byte {
-	if m != nil {
-		return m.Root
-	}
-	return nil
-}
-
 func (m *FreshnessAssertion) GetFinalized() bool {
 	if m != nil && m.Finalized != nil {
 		return *m.Finalized
 	}
 	return false
+}
+
+func (m *FreshnessAssertion) GetRound() int64 {
+	if m != nil && m.Round != nil {
+		return *m.Round
+	}
+	return 0
+}
+
+func (m *FreshnessAssertion) GetRoot() []byte {
+	if m != nil {
+		return m.Root
+	}
+	return nil
 }
 
 func init() {

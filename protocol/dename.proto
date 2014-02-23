@@ -32,6 +32,7 @@ message LookupResponse {
 
 message FreshnessAssertion {
 	required int64 time = 1;
-	required bytes root = 2;
-	optional bool finalized = 3;
+	optional bool finalized = 2;
+	required int64 round = 3;
+	required bytes root = 4;
 }
