@@ -369,8 +369,9 @@ func (dn *Dename) HandleClientTransfer(reply *protocol.S2CMessage, round int64,
 	regtoken, rq_bs []byte) {
 	_true, _false := true, false
 	reply.TransferLooksGood = &_false
-	ticket_fresh := make(chan bool)
-	for {
+	ticket_freshness_checked := make(chan struct{})
+	var ticket_fresh bool
+	for { // at most once
 		if len(regtoken) != 32 {
 			regtoken = nil
 			break
@@ -384,12 +385,13 @@ func (dn *Dename) HandleClientTransfer(reply *protocol.S2CMessage, round int64,
 		}
 		go func() {
 			if _, err := dn.sql_use_regtoken.Exec(regtoken[:16]); err == nil {
-				ticket_fresh <- true
+				ticket_fresh = true
 			} else if pgutil.IsError(err, pgutil.ErrUniqueViolation) {
-				ticket_fresh <- false
+				ticket_fresh = false
 			} else {
 				log.Fatalf("Lookup hash from blacklist: %s", err)
 			}
+			close(ticket_freshness_checked)
 		}()
 		break
 	}
@@ -397,10 +399,13 @@ func (dn *Dename) HandleClientTransfer(reply *protocol.S2CMessage, round int64,
 	if err != nil {
 		return
 	}
-	fmt.Printf("(%d, '<-ticket_fresh'),\n", time.Now().UnixNano())
-	if old_pk == nil && (regtoken == nil || !<-ticket_fresh) {
-		// FIXME: uncomment the next line to use ticketer to enable rate-limiting
-		// return
+	fmt.Printf("(%d, '<-ticket_freshness_checked'),\n", time.Now().UnixNano())
+	if old_pk == nil && regtoken != nil {
+		<-ticket_freshness_checked
+		if !ticket_fresh {
+			// FIXME: uncomment the next line to use ticketer to enable rate-limiting
+			// return
+		}
 	}
 	fmt.Printf("(%d, 'lock name'),\n", time.Now().UnixNano())
 	dn.lockednames_mutex.Lock()
@@ -425,33 +430,6 @@ func (dn *Dename) ValidateRequest(dst_round int64, rq_bs []byte) (name []byte,
 	if err != nil {
 		return
 	}
-	fmt.Printf("(%d, 'take snapshot id'),\n", time.Now().UnixNano())
-	dn.round_processed.RLock()
-	snapshot := dn.round_processed.Snapshot
-	dn.round_processed.RUnlock()
-
-	fmt.Printf("(%d, 'open snapshot'),\n", time.Now().UnixNano())
-	mapHandle, err := dn.merklemap.GetSnapshot(snapshot).OpenHandle()
-	if err != nil {
-		log.Fatalf("mm.GetSnapshot(%d).OpenHandle(): %s", snapshot, err)
-	}
-	defer mapHandle.Close()
-	old_pk, _ = dn.Resolve(mapHandle, name)
-	if old_pk != nil {
-		fmt.Printf("(%d, 'verify accept'),\n", time.Now().UnixNano())
-		accept_bs, err := new_pk.Verify(rq_bs, protocol.SIGN_TAG_ACCEPT)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		accept := new(protocol.AcceptTransfer)
-		if err := proto.Unmarshal(accept_bs, accept); err != nil {
-			return nil, nil, nil, err
-		}
-		fmt.Printf("(%d, 'verify transfer'),\n", time.Now().UnixNano())
-		if _, err = old_pk.Verify(accept.Transfer, protocol.SIGN_TAG_TRANSFER); err != nil {
-			return nil, nil, nil, err
-		}
-	}
 
 	fmt.Printf("(%d, 'check freshness'),\n", time.Now().UnixNano())
 	fresh := false
@@ -464,6 +442,41 @@ func (dn *Dename) ValidateRequest(dst_round int64, rq_bs []byte) (name []byte,
 	dn.fresh.RUnlock()
 	if !fresh {
 		return nil, nil, nil, errors.New("Not fresh enough")
+	}
+
+	fmt.Printf("(%d, 'go resolve'),\n", time.Now().UnixNano())
+	resolve_done := make(chan struct{})
+	go func() {
+		dn.round_processed.RLock()
+		snapshot := dn.round_processed.Snapshot
+		dn.round_processed.RUnlock()
+
+		mapHandle, err := dn.merklemap.GetSnapshot(snapshot).OpenHandle()
+		if err != nil {
+			log.Fatalf("mm.GetSnapshot(%d).OpenHandle(): %s", snapshot, err)
+		}
+		defer mapHandle.Close()
+		old_pk, _ = dn.Resolve(mapHandle, name)
+		close(resolve_done)
+	}()
+
+	fmt.Printf("(%d, 'verify accept'),\n", time.Now().UnixNano())
+	accept_bs, err := new_pk.Verify(rq_bs, protocol.SIGN_TAG_ACCEPT)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	accept := new(protocol.AcceptTransfer)
+	if err := proto.Unmarshal(accept_bs, accept); err != nil {
+		return nil, nil, nil, err
+	}
+
+	fmt.Printf("(%d, '<-resolve_done'),\n", time.Now().UnixNano())
+	<-resolve_done
+	if old_pk != nil {
+		fmt.Printf("(%d, 'verify transfer'),\n", time.Now().UnixNano())
+		if _, err = old_pk.Verify(accept.Transfer, protocol.SIGN_TAG_TRANSFER); err != nil {
+			return nil, nil, nil, err
+		}
 	}
 	return name, old_pk, new_pk, nil
 }
