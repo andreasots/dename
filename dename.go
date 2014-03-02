@@ -31,6 +31,39 @@ import (
 	"time"
 )
 
+var op_lock sync.Mutex
+var op_counts = make(map[string]int64)
+var op_times = make(map[string]int64)
+
+type op_tracker struct {
+	string
+	int64
+}
+
+func op_track_start(op string) op_tracker {
+	op_lock.Lock()
+	op_counts[op]++
+	op_lock.Unlock()
+	return op_tracker{op, time.Now().UnixNano()}
+}
+func (t *op_tracker) end() {
+	op_lock.Lock()
+	op_times[t.string] += time.Now().UnixNano() - t.int64
+	op_lock.Unlock()
+}
+func (t *op_tracker) next(op string) op_tracker {
+	t.end()
+	return op_track_start(op)
+}
+func op_track_function(op string) func() {
+	tracker := op_track_start(op)
+	return func() {
+		tracker.end()
+	}
+}
+
+var true_, false_ = true, false // cannot take address of constant...
+
 type Peer struct {
 	id   int64
 	addr string
@@ -57,8 +90,9 @@ type Dename struct {
 	merklemap *merklemap.Map
 	c         *consensus.Consensus
 
-	lockednames_mutex sync.Mutex
-	lockednames       map[string]struct{}
+	ongoing_transfers_mutex sync.Mutex
+	ongoing_transfers       map[string]chan struct{}
+	transferLimiter         chan struct{}
 
 	freshnessThreshold int64
 	expirationTicks    int64
@@ -108,9 +142,10 @@ type Cfg struct {
 		File            string
 	}
 	Clients struct {
-		Host               string
-		FreshnessThreshold int64
-		RegTokenMacKeyFile string
+		Host                string
+		ConcurrentTransfers int
+		FreshnessThreshold  int64
+		RegTokenMacKeyFile  string
 	}
 }
 
@@ -122,7 +157,11 @@ func main() {
 		ch := make(chan os.Signal)
 		signal.Notify(ch, os.Interrupt)
 		<-ch
-		panic("Interrupted!")
+		for op := range op_times {
+			fmt.Printf("(\"%s\", %d, %d, %f),\n", op, op_counts[op], op_times[op], float64(op_times[op])/float64(op_counts[op])/1e6)
+		}
+		log.Fatalf("Interrupdted!")
+		// panic("Interrupted!")
 	}()
 	cfg := new(Cfg)
 	err := gcfg.ReadFileInto(cfg, "dename.cfg")
@@ -131,9 +170,10 @@ func main() {
 	}
 	dn := &Dename{peers: make(map[int64]*Peer, len(cfg.Peer)),
 		addr2peer:          make(map[string]*Peer, len(cfg.Peer)),
-		lockednames:        make(map[string]struct{}),
+		ongoing_transfers:  make(map[string]chan struct{}),
 		expirationTicks:    cfg.Naming.ExpirationTicks,
 		freshnessThreshold: cfg.Clients.FreshnessThreshold,
+		transferLimiter:    make(chan struct{}, cfg.Clients.ConcurrentTransfers),
 	}
 	dn.db, err = sql.Open("postgres", "user="+cfg.Database.User+" password="+cfg.Database.Password+" dbname="+cfg.Database.Name+" sslmode=disable")
 	if err != nil {
@@ -244,6 +284,9 @@ func main() {
 	go dn.ListenForPeers()
 	go dn.ConnectToPeers()
 	if cfg.Clients.Host != "" {
+		for i := 0; i < cfg.Clients.ConcurrentTransfers; i++ {
+			dn.transferLimiter <- struct{}{}
+		}
 		go dn.ListenForClients(cfg.Clients.Host)
 	}
 	go dn.MaintainFreshness(t0, dt)
@@ -271,7 +314,7 @@ func (dn *Dename) RoundCallback(r *consensus.RoundSummary) bool {
 }
 
 func (dn *Dename) HandleClient(conn net.Conn) {
-	fmt.Printf("[(%d, 'read'),\n", time.Now().UnixNano())
+	// fmt.Printf("[(%d, 'read'),\n", time.Now().UnixNano())
 	defer conn.Close()
 	var sz uint16
 	err := binary.Read(conn, binary.LittleEndian, &sz)
@@ -283,13 +326,13 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 	if err != nil {
 		return
 	}
-	fmt.Printf("(%d, 'parse'),\n", time.Now().UnixNano())
+	// fmt.Printf("(%d, 'parse'),\n", time.Now().UnixNano())
 	msg := new(protocol.C2SMessage)
 	if err = proto.Unmarshal(msg_bs, msg); err != nil {
 		return
 	}
 
-	fmt.Printf("(%d, 'take round and root'),\n", time.Now().UnixNano())
+	// fmt.Printf("(%d, 'take round and root'),\n", time.Now().UnixNano())
 	reply := new(protocol.S2CMessage)
 
 	dn.round_completed.RLock()
@@ -300,7 +343,7 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 	round := dn.round_completed
 	dn.round_completed.RUnlock()
 
-	fmt.Printf("(%d, 'handle'),\n", time.Now().UnixNano())
+	// fmt.Printf("(%d, 'handle'),\n", time.Now().UnixNano())
 	if msg.GetRoot != nil {
 		reply.Root = round.SignedResult
 	}
@@ -318,9 +361,9 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("(%d, 'send reply'),\n", time.Now().UnixNano())
+	// fmt.Printf("(%d, 'send reply'),\n", time.Now().UnixNano())
 	conn.Write(reply_bs)
-	fmt.Printf("(%d, '')]\n", time.Now().UnixNano())
+	// fmt.Printf("(%d, '')]\n", time.Now().UnixNano())
 }
 
 func (dn *Dename) HandleClientLookup(reply *protocol.S2CMessage,
@@ -345,7 +388,8 @@ func (dn *Dename) HandleClientLookup(reply *protocol.S2CMessage,
 
 // Resolve does a Name -> PublicKey,MerkleProof lookup. Returns nil if not found
 func (dn *Dename) Resolve(mapHandle *merklemap.Handle, name []byte) (*sgp.Entity, *merklemap.MerklePath) {
-	fmt.Printf("(%d, 'resolve'),\n", time.Now().UnixNano())
+	defer op_track_function("Resolve")()
+	// fmt.Printf("(%d, 'resolve'),\n", time.Now().UnixNano())
 	pk_hash, path, err := mapHandle.GetPath(merklemap.Hash(name))
 	if err != nil {
 		log.Fatalf("mapHandle.GetPath(h(%s)): %s", string(name), err)
@@ -353,7 +397,7 @@ func (dn *Dename) Resolve(mapHandle *merklemap.Handle, name []byte) (*sgp.Entity
 		return nil, nil
 	}
 	var pk_bs []byte
-	fmt.Printf("(%d, 'select rainbow'),\n", time.Now().UnixNano())
+	// fmt.Printf("(%d, 'select rainbow'),\n", time.Now().UnixNano())
 	err = dn.sql_rainbow_lookup.QueryRow(pk_hash[:]).Scan(&pk_bs)
 	if err != nil && err != sql.ErrNoRows {
 		log.Fatalf("SELECT pk for \"%s\" from db: %s", string(name), err)
@@ -367,22 +411,24 @@ func (dn *Dename) Resolve(mapHandle *merklemap.Handle, name []byte) (*sgp.Entity
 
 func (dn *Dename) HandleClientTransfer(reply *protocol.S2CMessage, round int64,
 	regtoken, rq_bs []byte) {
-	_true, _false := true, false
-	reply.TransferLooksGood = &_false
-	ticket_freshness_checked := make(chan struct{})
+	<-dn.transferLimiter
+	defer func() { dn.transferLimiter <- struct{}{} }()
+	reply.TransferLooksGood = &false_
 	var ticket_fresh bool
+	var ticket_freshness_checked chan struct{}
 	for { // at most once
 		if len(regtoken) != 32 {
 			regtoken = nil
 			break
 		}
-		fmt.Printf("(%d, 'verify ticket'),\n", time.Now().UnixNano())
+		// fmt.Printf("(%d, 'verify ticket'),\n", time.Now().UnixNano())
 		mac := hmac.New(sha256.New, dn.regtoken_mac_key)
 		mac.Write(regtoken[:16])
 		if !hmac.Equal(mac.Sum(nil), regtoken[16:]) {
 			regtoken = nil
 			break
 		}
+		ticket_freshness_checked = make(chan struct{})
 		go func() {
 			if _, err := dn.sql_use_regtoken.Exec(regtoken[:16]); err == nil {
 				ticket_fresh = true
@@ -399,7 +445,7 @@ func (dn *Dename) HandleClientTransfer(reply *protocol.S2CMessage, round int64,
 	if err != nil {
 		return
 	}
-	fmt.Printf("(%d, '<-ticket_freshness_checked'),\n", time.Now().UnixNano())
+	// fmt.Printf("(%d, '<-ticket_freshness_checked'),\n", time.Now().UnixNano())
 	if old_pk == nil && regtoken != nil {
 		<-ticket_freshness_checked
 		if !ticket_fresh {
@@ -407,31 +453,32 @@ func (dn *Dename) HandleClientTransfer(reply *protocol.S2CMessage, round int64,
 			// return
 		}
 	}
-	fmt.Printf("(%d, 'lock name'),\n", time.Now().UnixNano())
-	dn.lockednames_mutex.Lock()
-	if _, locked := dn.lockednames[string(name)]; locked {
-		dn.lockednames_mutex.Unlock()
-		log.Printf("Name \"%s\" already locked for update", string(name))
+	// fmt.Printf("(%d, 'lock name'),\n", time.Now().UnixNano())
+	dn.ongoing_transfers_mutex.Lock()
+	if _, locked := dn.ongoing_transfers[string(name)]; locked {
+		dn.ongoing_transfers_mutex.Unlock()
 		return
-	} else {
-		reply.TransferLooksGood = &_true
-		dn.lockednames[string(name)] = struct{}{}
-		dn.lockednames_mutex.Unlock()
-		fmt.Printf("(%d, 'hand to round'),\n", time.Now().UnixNano())
-		dn.c.IncomingRequests <- rq_bs
-		// TODO: signed promise to transfer the name
 	}
+	reply.TransferLooksGood = &true_
+	processed := make(chan struct{})
+	dn.ongoing_transfers[string(name)] = processed
+	dn.ongoing_transfers_mutex.Unlock()
+	// fmt.Printf("(%d, 'hand to round'),\n", time.Now().UnixNano())
+	dn.c.IncomingRequests <- rq_bs
+	// TODO: signed promise to transfer the name
+
+	<-processed
 }
 
 func (dn *Dename) ValidateRequest(dst_round int64, rq_bs []byte) (name []byte,
 	old_pk, new_pk *sgp.Entity, err error) {
-	fmt.Printf("(%d, 'NaiveParseRequest'),\n", time.Now().UnixNano())
+	defer op_track_function("ValidateRequest")()
 	name, new_pk, proposedRoot, err := NaiveParseRequest(rq_bs)
 	if err != nil {
 		return
 	}
 
-	fmt.Printf("(%d, 'check freshness'),\n", time.Now().UnixNano())
+	tracker := op_track_start("dn.fresh")
 	fresh := false
 	dn.fresh.RLock()
 	for _, fresh_root := range dn.fresh.roots {
@@ -444,23 +491,25 @@ func (dn *Dename) ValidateRequest(dst_round int64, rq_bs []byte) (name []byte,
 		return nil, nil, nil, errors.New("Not fresh enough")
 	}
 
-	fmt.Printf("(%d, 'go resolve'),\n", time.Now().UnixNano())
 	resolve_done := make(chan struct{})
 	go func() {
+		tracker := op_track_start("take snapshot")
 		dn.round_processed.RLock()
 		snapshot := dn.round_processed.Snapshot
 		dn.round_processed.RUnlock()
 
+		tracker = tracker.next("mm.OpenHandle()")
 		mapHandle, err := dn.merklemap.GetSnapshot(snapshot).OpenHandle()
 		if err != nil {
 			log.Fatalf("mm.GetSnapshot(%d).OpenHandle(): %s", snapshot, err)
 		}
 		defer mapHandle.Close()
+		tracker.end()
 		old_pk, _ = dn.Resolve(mapHandle, name)
 		close(resolve_done)
 	}()
 
-	fmt.Printf("(%d, 'verify accept'),\n", time.Now().UnixNano())
+	tracker = tracker.next("new_pk.Verify(rq_bs)")
 	accept_bs, err := new_pk.Verify(rq_bs, protocol.SIGN_TAG_ACCEPT)
 	if err != nil {
 		return nil, nil, nil, err
@@ -470,18 +519,21 @@ func (dn *Dename) ValidateRequest(dst_round int64, rq_bs []byte) (name []byte,
 		return nil, nil, nil, err
 	}
 
-	fmt.Printf("(%d, '<-resolve_done'),\n", time.Now().UnixNano())
+	tracker = tracker.next("<-resolve_done")
 	<-resolve_done
+	tracker.end()
 	if old_pk != nil {
-		fmt.Printf("(%d, 'verify transfer'),\n", time.Now().UnixNano())
+		tracker = op_track_start("old_pk.Verify(accept.Transfer)")
 		if _, err = old_pk.Verify(accept.Transfer, protocol.SIGN_TAG_TRANSFER); err != nil {
 			return nil, nil, nil, err
 		}
+		tracker.end()
 	}
 	return name, old_pk, new_pk, nil
 }
 
 func NaiveParseRequest(accept_signed_bs []byte) ([]byte, *sgp.Entity, []byte, error) {
+	defer op_track_function("NaiveParseRequest")()
 	accept_signed := new(sgp.Signed)
 	if err := proto.Unmarshal(accept_signed_bs, accept_signed); err != nil {
 		return nil, nil, nil, err
@@ -537,6 +589,7 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 			log.Fatalf("mapHandle.GetRootHash(): %s", err)
 		}
 	} else {
+		names_we_transferred := make([][]byte, 0, len(*peer_rq_map[dn.us.id]))
 		// checking the modification times is non-idempotent, so do it in a tx
 		tx, err := dn.db.Begin()
 		if err != nil {
@@ -565,6 +618,9 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 			peer_id := int64(dn.peer_ids[i])
 			for _, rq_bs := range *peer_rq_map[peer_id] {
 				name, _, pk, err := dn.ValidateRequest(round, rq_bs)
+				if peer_id == dn.us.id {
+					names_we_transferred = append(names_we_transferred, name)
+				}
 				if err != nil {
 					log.Printf("qpr: invalid transfer of \"%s\" by %d (%s)", string(name), peer_id, err)
 					continue
@@ -633,15 +689,14 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 			log.Fatalf("INSERT round %d snapshot %d: %s", round, new_snapshot, err)
 		}
 
-		dn.lockednames_mutex.Lock()
-		for _, rq_bs := range *peer_rq_map[dn.us.id] {
-			if name, _, _, err := NaiveParseRequest(rq_bs); err == nil {
-				delete(dn.lockednames, string(name))
-			} else {
-				panic(err)
+		dn.ongoing_transfers_mutex.Lock()
+		for _, name := range names_we_transferred {
+			if ch, ok := dn.ongoing_transfers[string(name)]; ok {
+				close(ch)
+				delete(dn.ongoing_transfers, string(name))
 			}
 		}
-		dn.lockednames_mutex.Unlock()
+		dn.ongoing_transfers_mutex.Unlock()
 
 		dn.round_processed.Lock()
 		if dn.round_processed.Id != last_round {
