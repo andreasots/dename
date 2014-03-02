@@ -12,8 +12,8 @@ if [[ -z "$targetuser" ]]; then
 fi
 
 n=10000
-for P in 40 80 160; do
-	for k in 2 4 8 16 32 64 75; do
+for P in 1 2 4 8; do
+	for k in 2 4 8 16 32 64; do
 		dir="bench_k${k}P${P}"
 		mkdir "$dir"
 		./setup-instances.sh "$dir" "$k"
@@ -25,15 +25,15 @@ for P in 40 80 160; do
 		servers=()
 		for i in $(seq 1 ${k}); do
 			cd "$i"
-			sudo -u "$targetuser" -- ../../dename > stdout.log 2>stderr.log &
+			sudo -u "$targetuser" -- env "GOMAXPROCS=$P" ../../dename > stdout.log 2>stderr.log &
 			servers+=($!)
 			cd ..
 		done
 
 		sleep "$k"
 
-		echo "../benchmarkthis.sh $n $P # $k servers" 
-		sudo -u "$targetuser" -- ../benchmarkthis.sh "$n" "$P"
+		echo "../benchmarkthis.sh $n # $k servers, parallelism $P" 
+		sudo -u "$targetuser" -- ../benchmarkthis.sh "$n"
 
 		# stop the servers...
 		for pid in "${servers[@]}"; do

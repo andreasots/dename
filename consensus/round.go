@@ -24,6 +24,10 @@ type RoundSummary struct {
 	AuxResults           map[int64]*[]byte
 }
 
+type Request interface {
+	Bytes() []byte
+}
+
 // round is a sequence of communication and computation steps that results in
 // zero or requests being handled, possibly mutating some shared state.
 type round struct {

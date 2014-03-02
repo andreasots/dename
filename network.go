@@ -27,7 +27,7 @@ func (dn *Dename) ListenForClients(addr string) {
 			log.Printf("client_lnr.Accept(): %s", err)
 			continue
 		}
-		dn.HandleClient(conn)
+		go dn.HandleClient(conn)
 		runtime.Gosched()
 	}
 }
