@@ -141,11 +141,11 @@ func main() {
 		}
 		addr_struct, err := net.ResolveIPAddr("", peercfg.Host)
 		if err != nil {
-			log.Fatal("net.ResolveIPAddr(\"\", %s): %s", peercfg.Host, err)
+			log.Fatalf("net.ResolveIPAddr(\"\", %s): %s", peercfg.Host, err)
 		}
 		peer.addr = addr_struct.String()
 		if _, already := dn.peers[peer.id]; already {
-			log.Fatal("Two peers with id %d", peer.id)
+			log.Fatalf("Two peers with id %d", peer.id)
 		}
 		dn.peers[peer.id] = peer
 		dn.addr2peer[peer.addr] = peer
@@ -264,7 +264,7 @@ func (dn *Dename) HandleClientLookup(reply *protocol.S2CMessage,
 func (dn *Dename) Resolve(mapHandle *merklemap.Handle, name []byte) (*sgp.Entity, *merklemap.MerklePath) {
 	pk_hash, path, err := mapHandle.GetPath(merklemap.Hash(name))
 	if err != nil {
-		log.Fatal("mapHandle.GetPath(h(%s)): %s", string(name), err)
+		log.Fatalf("mapHandle.GetPath(h(%s)): %s", string(name), err)
 	} else if pk_hash == nil {
 		return nil, nil
 	}
