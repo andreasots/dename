@@ -31,37 +31,6 @@ import (
 	"time"
 )
 
-var op_lock sync.Mutex
-var op_counts = make(map[string]int64)
-var op_times = make(map[string]int64)
-
-type op_tracker struct {
-	string
-	int64
-}
-
-func op_track_start(op string) op_tracker {
-	op_lock.Lock()
-	op_counts[op]++
-	op_lock.Unlock()
-	return op_tracker{op, time.Now().UnixNano()}
-}
-func (t *op_tracker) end() {
-	op_lock.Lock()
-	op_times[t.string] += time.Now().UnixNano() - t.int64
-	op_lock.Unlock()
-}
-func (t *op_tracker) next(op string) op_tracker {
-	t.end()
-	return op_track_start(op)
-}
-func op_track_function(op string) func() {
-	tracker := op_track_start(op)
-	return func() {
-		tracker.end()
-	}
-}
-
 var true_, false_ = true, false // cannot take address of constant...
 
 type Peer struct {
@@ -157,11 +126,7 @@ func main() {
 		ch := make(chan os.Signal)
 		signal.Notify(ch, os.Interrupt)
 		<-ch
-		for op := range op_times {
-			fmt.Printf("(\"%s\", %d, %d, %f),\n", op, op_counts[op], op_times[op], float64(op_times[op])/float64(op_counts[op])/1e6)
-		}
-		log.Fatalf("Interrupdted!")
-		// panic("Interrupted!")
+		panic("Interrupted!")
 	}()
 	cfg := new(Cfg)
 	err := gcfg.ReadFileInto(cfg, "dename.cfg")
@@ -388,7 +353,6 @@ func (dn *Dename) HandleClientLookup(reply *protocol.S2CMessage,
 
 // Resolve does a Name -> PublicKey,MerkleProof lookup. Returns nil if not found
 func (dn *Dename) Resolve(mapHandle *merklemap.Handle, name []byte) (*sgp.Entity, *merklemap.MerklePath) {
-	defer op_track_function("Resolve")()
 	// fmt.Printf("(%d, 'resolve'),\n", time.Now().UnixNano())
 	pk_hash, path, err := mapHandle.GetPath(merklemap.Hash(name))
 	if err != nil {
@@ -472,13 +436,11 @@ func (dn *Dename) HandleClientTransfer(reply *protocol.S2CMessage, round int64,
 
 func (dn *Dename) ValidateRequest(dst_round int64, rq_bs []byte) (name []byte,
 	old_pk, new_pk *sgp.Entity, err error) {
-	defer op_track_function("ValidateRequest")()
 	name, new_pk, proposedRoot, err := NaiveParseRequest(rq_bs)
 	if err != nil {
 		return
 	}
 
-	tracker := op_track_start("dn.fresh")
 	fresh := false
 	dn.fresh.RLock()
 	for _, fresh_root := range dn.fresh.roots {
@@ -493,23 +455,19 @@ func (dn *Dename) ValidateRequest(dst_round int64, rq_bs []byte) (name []byte,
 
 	resolve_done := make(chan struct{})
 	go func() {
-		tracker := op_track_start("take snapshot")
 		dn.round_processed.RLock()
 		snapshot := dn.round_processed.Snapshot
 		dn.round_processed.RUnlock()
 
-		tracker = tracker.next("mm.OpenHandle()")
 		mapHandle, err := dn.merklemap.GetSnapshot(snapshot).OpenHandle()
 		if err != nil {
 			log.Fatalf("mm.GetSnapshot(%d).OpenHandle(): %s", snapshot, err)
 		}
 		defer mapHandle.Close()
-		tracker.end()
 		old_pk, _ = dn.Resolve(mapHandle, name)
 		close(resolve_done)
 	}()
 
-	tracker = tracker.next("new_pk.Verify(rq_bs)")
 	accept_bs, err := new_pk.Verify(rq_bs, protocol.SIGN_TAG_ACCEPT)
 	if err != nil {
 		return nil, nil, nil, err
@@ -519,21 +477,16 @@ func (dn *Dename) ValidateRequest(dst_round int64, rq_bs []byte) (name []byte,
 		return nil, nil, nil, err
 	}
 
-	tracker = tracker.next("<-resolve_done")
 	<-resolve_done
-	tracker.end()
 	if old_pk != nil {
-		tracker = op_track_start("old_pk.Verify(accept.Transfer)")
 		if _, err = old_pk.Verify(accept.Transfer, protocol.SIGN_TAG_TRANSFER); err != nil {
 			return nil, nil, nil, err
 		}
-		tracker.end()
 	}
 	return name, old_pk, new_pk, nil
 }
 
 func NaiveParseRequest(accept_signed_bs []byte) ([]byte, *sgp.Entity, []byte, error) {
-	defer op_track_function("NaiveParseRequest")()
 	accept_signed := new(sgp.Signed)
 	if err := proto.Unmarshal(accept_signed_bs, accept_signed); err != nil {
 		return nil, nil, nil, err
