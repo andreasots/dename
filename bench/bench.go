@@ -7,7 +7,6 @@ import (
 	"github.com/andres-erbsen/sgp"
 	"log"
 	"os"
-	"sync"
 	"time"
 )
 
@@ -23,6 +22,7 @@ func main() {
 	}
 	var n int
 	fmt.Sscan(os.Args[1], &n)
+	done := make(chan struct{}, n)
 	_, sk, err := sgp.GenerateKey(rand.Reader, time.Now(), time.Duration(30*24)*time.Hour)
 
 	c, err := dnmclient.NewFromFile("dnmlookup.cfg", nil)
@@ -30,27 +30,29 @@ func main() {
 		log.Fatal("NewFromFile: ", err)
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(n)
 	s := time.Now().UnixNano()
 	t0 := time.Now()
-	for i := 0; i < n; i++ {
-		<-connections
-		go func(i int) {
-			for {
-				err := c.Register(sk, fmt.Sprint(s+int64(i)), regtoken)
-				if err == nil {
+	go func() {
+		for i := 0; i < n; i++ {
+			<-connections
+			go func(i int) {
+				for {
+					err := c.Register(sk, fmt.Sprint(s+int64(i)), regtoken)
+					if err != nil {
+						log.Print(i, err)
+						continue
+					}
 					break
 				}
-				log.Print("Register: ", err)
-			}
-			log.Print("\t", i)
-			connections <- struct{}{}
-			wg.Done()
-		}(i)
-		log.Print(i)
+				connections <- struct{}{}
+				done <- struct{}{}
+			}(i)
+		}
+	}()
+	for remaining := n; remaining > 0; remaining-- {
+		<-done
+		log.Printf("%d remaining", remaining)
 	}
-	wg.Wait()
 	t := time.Now()
 	ns := t.UnixNano() - t0.UnixNano()
 	fmt.Printf("%d (%s, %f rq/s)\n", ns, t.Sub(t0).String(), float64(n)/(float64(ns)/1e9))
