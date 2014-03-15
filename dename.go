@@ -242,8 +242,22 @@ func main() {
 		err := dn.db.QueryRow(`SELECT snapshot from naming_snapshots WHERE
 		round = $1`, dn.round_completed.Id).Scan(&dn.round_completed.Snapshot)
 		if err != nil && err != sql.ErrNoRows {
-			log.Fatalf("SELECT snapshot for round las_completed: %s", err)
+			log.Fatalf("SELECT snapshot for round last_completed: %s", err)
 		}
+	}
+
+	// load rounds relevant for freshness
+	rows, err := dn.db.Query(`SELECT result FROM rounds ORDER BY close_time DESC LIMIT $1`,
+		dn.freshnessThreshold)
+	if err != nil {
+		log.Fatalf("latest results: %s", err)
+	}
+	for rows.Next() {
+		var result []byte
+		if err := rows.Scan(&result); err != nil {
+			log.Fatalf("latest results scan: %s", err)
+		}
+		dn.fresh.roots = append(dn.fresh.roots, result)
 	}
 
 	go dn.ListenForPeers()
