@@ -1,4 +1,4 @@
-How to install/use:
+How to to run a dename server:
 
 * Install an up-to-date version of PostgreSQL
 * Install an up-to-date version of golang (>= 1.1.2)
@@ -13,9 +13,7 @@ How to install/use:
 * Run `go install github.com/andres-erbsen/dename`
 * Create a DB user and a new database in PostgreSQL
 *    Configure your `dename.cfg` 
-* Run `dename`
+* Run `dename` in the directory of `dename.cfg`
 
-How to test multiple instances on the same machine:
- * Run `./setup-instances.sh <directory> <number of instances>`
- * Run `./run-instances.sh <directory> <number of instances>` (or run them manually in different terminal windows, if you like)
-
+Script for testing multiple instances on the same machine:
+ * `./setup-instances.sh <directory> <number of instances>`

@@ -14,6 +14,7 @@ import (
 	"log"
 	"net/http"
 	"net/smtp"
+	"os"
 	"regexp"
 	"strings"
 	txt_template "text/template"
@@ -160,16 +161,16 @@ func staticHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	if len(os.Args) != 2 {
+		log.Fatalf("usage: %s SECRETKEYFILE", os.Args[0])
+	}
 	var err error
-	mac_key, err = ioutil.ReadFile("SECRETKEY")
+	mac_key, err = ioutil.ReadFile(os.Args[1])
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// sudo sudo -u postgres createuser -P -S -D -R ticketer # ticketpw \n ticketpw
-	// sudo sudo -u postgres createdb ticketing
-	// reset: echo "TRUNCATE blacklist;" | sudo sudo -u postgres -d ticketing psql
-	db, err = sql.Open("postgres", "user=ticketer password=ticketpw dbname=ticketing sslmode=disable")
+	db, err = sql.Open("postgres", "user=tokenserver password=tokenpw dbname=tokendb sslmode=disable")
 	if err != nil {
 		log.Fatal(err)
 	}

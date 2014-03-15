@@ -22,7 +22,7 @@ var ErrRejected = errors.New("Server refused to transfer the name")
 type Cfg struct {
 	Peer map[string]*struct {
 		PublicKey string
-		Host      string
+		ConnectTo string
 	}
 }
 
@@ -58,7 +58,7 @@ func NewFromFile(cfgfile string, proxy_dialer proxy.Dialer) (dnmc *DenameClient,
 	var server string
 	for _, peer := range cfg.Peer {
 		if server == "" {
-			server = peer.Host
+			server = peer.ConnectTo
 		}
 		pk_bytes, err := base64.StdEncoding.DecodeString(peer.PublicKey)
 		if err != nil {
@@ -101,7 +101,7 @@ func (dnmc *DenameClient) roundTrip(msg *protocol.C2SMessage) (
 		return
 	}
 
-	conn, err := dnmc.dialer.Dial("tcp", dnmc.server+":6263")
+	conn, err := dnmc.dialer.Dial("tcp", dnmc.server)
 	if err != nil {
 		return
 	}

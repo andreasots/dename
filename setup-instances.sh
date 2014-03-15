@@ -23,25 +23,37 @@ fi
 setup_instance() {
 	mkdir -p "$dir/$1"
 	sed -e "s/\$1/$1/g" dename.cfg > $dir/$1/dename.cfg
-	host=$(grep -Pzo '\[general\]\n(.+\n)*host\s*=\s*\K.+' "$dir/$1/dename.cfg")
+	listenat=$(grep -Pzo '\[general\]\n(.+\n)*listenat\s*=\s*\K.+' "$dir/$1/dename.cfg")
 	dbname=$(grep -Pzo '\[database\]\n(.+\n)*name\s*=\s*\K.+' "$dir/$1/dename.cfg")
 	dbuser=$(grep -Pzo '\[database\]\n(.+\n)*user\s*=\s*\K.+' "$dir/$1/dename.cfg")
 	dbpw=$(grep -Pzo '\[database\]\n(.+\n)*password\s*=\s*\K.+' "$dir/$1/dename.cfg")
 	pk=$($keygen 2>"$dir/$1/sk" | tee "$dir/$1/pk" | base64 | tr -d '\n')
 	echo "
 [peer \"$1\"]
-host = $host
+connectto = $listenat
 publickey = $pk
 " >> "$tmp_peer_config"
 	echo "
 CREATE USER \"$dbuser\" WITH PASSWORD '$dbpw';
+DROP DATABASE \"$dbname\";
 CREATE DATABASE \"$dbname\";
 GRANT ALL PRIVILEGES ON DATABASE \"$dbname\" to \"$dbuser\";
 \\q" | sudo su - postgres -c psql
-	sudo ip addr add local "$host/32" dev "lo:$1" scope host
 }
 	
 for i in $(seq 1 "$count"); do setup_instance "$i"; done
-for i in $(seq 1 "$count"); do cat "$tmp_peer_config" >> "$dir/$i/dename.cfg"; done
-cp "$tmp_peer_config" "$dir/dnmlookup.cfg"
+for i in $(seq 1 "$count"); do
+	cat "$tmp_peer_config" >> "$dir/$i/dename.cfg"
+	sed -i "s/^starttime = .*$/starttime = $((($(date +%s)+1)))/" "$dir/$i/dename.cfg"
+done
+sed 's/connectto = 127.0.0.1:13/connectto = 127.0.0.1:14/' "$tmp_peer_config" > "$dir/dnmlookup.cfg"
 
+
+# setup the tokenserver
+echo "
+CREATE USER \"tokenserver\" WITH PASSWORD 'tokenpw';
+DROP DATABASE \"tokendb\";
+CREATE DATABASE \"tokendb\";
+GRANT ALL PRIVILEGES ON DATABASE \"tokendb\" to \"tokenserver\";
+\\q" | sudo su - postgres -c psql
+dd bs=32 count=1 if=/dev/urandom "of=$dir/tokenserver_mac_key" status=none

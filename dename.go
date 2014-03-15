@@ -421,8 +421,7 @@ func (dn *Dename) HandleClientTransfer(reply *protocol.S2CMessage, round int64,
 	if old_pk == nil && regtoken != nil {
 		<-ticket_freshness_checked
 		if !ticket_fresh {
-			// FIXME: uncomment the next line to use ticketer to enable rate-limiting
-			// return
+			return
 		}
 	}
 	// fmt.Printf("(%d, 'lock name'),\n", time.Now().UnixNano())

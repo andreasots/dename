@@ -1,27 +1,49 @@
 package main
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"github.com/andres-erbsen/dename/dnmclient"
 	"github.com/andres-erbsen/sgp"
+	"io/ioutil"
 	"log"
 	"os"
 	"time"
 )
 
-const regtoken = "BPuWwRzl/gp279rMP3qgoAHbMi0bICSxOFJ+fjspJvU="
+var tokenserver_mac_key []byte
+
+func mktoken() string {
+	nonce := make([]byte, 16)
+	_, err := rand.Read(nonce)
+	if err != nil {
+		panic(err)
+	}
+	mac := hmac.New(sha256.New, tokenserver_mac_key)
+	mac.Write(nonce[:])
+	ticket := append(nonce, mac.Sum(nil)[:16]...)
+	return base64.StdEncoding.EncodeToString(ticket)
+}
 
 func main() {
+	if len(os.Args) != 3 {
+		log.Fatalf("usage: %s SECRETKEYFILE NUM_REGS", os.Args[0])
+	}
+	var err error
+	tokenserver_mac_key, err = ioutil.ReadFile(os.Args[1])
+	if err != nil {
+		log.Fatal(err)
+	}
+	var n int
+	fmt.Sscan(os.Args[2], &n)
+
 	connections := make(chan struct{}, 900)
 	for i := 0; i < 900; i++ {
 		connections <- struct{}{}
 	}
-	if len(os.Args) != 2 {
-		log.Fatal("USAGE: ", os.Args[0], " num_rqs")
-	}
-	var n int
-	fmt.Sscan(os.Args[1], &n)
 	done := make(chan struct{}, n)
 	_, sk, err := sgp.GenerateKey(rand.Reader, time.Now(), time.Duration(30*24)*time.Hour)
 
@@ -37,7 +59,7 @@ func main() {
 			<-connections
 			go func(i int) {
 				for {
-					err := c.Register(sk, fmt.Sprint(s+int64(i)), regtoken)
+					err := c.Register(sk, fmt.Sprint(s+int64(i)), mktoken())
 					if err != nil {
 						log.Print(i, err)
 						continue
