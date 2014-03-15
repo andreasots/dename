@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"code.google.com/p/gcfg"
 	"code.google.com/p/goprotobuf/proto"
+	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
@@ -34,14 +35,15 @@ import (
 var true_, false_ = true, false // cannot take address of constant...
 
 type Peer struct {
-	id   int64
-	addr string
-	pk   *sgp.Entity
+	id int64
+	pk *sgp.Entity
 
-	sync.RWMutex
+	sync.Mutex
 	// mutable:
-	conn      net.Conn
-	closeOnce *sync.Once
+	conn                    net.Conn
+	cipher                  cipher.AEAD
+	nonce                   uint64
+	havePreferredConnection bool
 }
 
 func (peer *Peer) PK() *sgp.Entity {
@@ -49,25 +51,24 @@ func (peer *Peer) PK() *sgp.Entity {
 }
 
 type Dename struct {
-	db        *sql.DB
-	our_sk    sgp.SecretKey
-	us        *Peer
-	peers     map[int64]*Peer
-	addr2peer map[string]*Peer
-	peer_ids  []int64
+	db       *sql.DB
+	our_sk   sgp.SecretKey
+	us       *Peer
+	peers    map[int64]*Peer
+	peer_ids []int64
 
 	merklemap *merklemap.Map
 	c         *consensus.Consensus
-
-	ongoing_transfers_mutex sync.Mutex
-	ongoing_transfers       map[string]chan struct{}
-	transferLimiter         chan struct{}
 
 	freshnessThreshold int64
 	expirationTicks    int64
 	regtoken_mac_key   []byte
 
 	// mutable state:
+	ongoing_transfers_mutex sync.Mutex
+	ongoing_transfers       map[string]chan struct{}
+	transferLimiter         chan struct{}
+
 	round_completed struct {
 		sync.RWMutex
 		*consensus.RoundSummary
@@ -88,13 +89,13 @@ type Dename struct {
 
 type Cfg struct {
 	General struct {
-		Host          string
+		ListenAt      string
 		SecretKeyFile string
 	}
 
 	Peer map[string]*struct {
 		PublicKey string
-		Host      string
+		ConnectTo string
 	}
 	Database struct {
 		Name           string
@@ -111,7 +112,7 @@ type Cfg struct {
 		File            string
 	}
 	Clients struct {
-		Host                string
+		ListenAt            string
 		ConcurrentTransfers int
 		FreshnessThreshold  int64
 		RegTokenMacKeyFile  string
@@ -134,7 +135,6 @@ func main() {
 		log.Fatalf("Failed to parse gcfg data: %s", err)
 	}
 	dn := &Dename{peers: make(map[int64]*Peer, len(cfg.Peer)),
-		addr2peer:          make(map[string]*Peer, len(cfg.Peer)),
 		ongoing_transfers:  make(map[string]chan struct{}),
 		expirationTicks:    cfg.Naming.ExpirationTicks,
 		freshnessThreshold: cfg.Clients.FreshnessThreshold,
@@ -184,6 +184,9 @@ func main() {
 		if _, err := fmt.Sscan(id_str, &peer.id); err != nil {
 			log.Fatal("Peer names must be integers, for example [peer \"1\"]")
 		}
+		if _, already := dn.peers[peer.id]; already {
+			log.Fatalf("Two peers with id %d", peer.id)
+		}
 		pk_bs, err := base64.StdEncoding.DecodeString(peercfg.PublicKey)
 		if err != nil {
 			log.Fatalf("Bad base64 as public key: %s (for %d)", err, peer.id)
@@ -191,16 +194,7 @@ func main() {
 		if err := peer.pk.Parse(pk_bs); err != nil {
 			log.Fatalf("Bad pk for %d: %s; %x", peer.id, err, pk_bs)
 		}
-		addr_struct, err := net.ResolveIPAddr("", peercfg.Host)
-		if err != nil {
-			log.Fatalf("net.ResolveIPAddr(\"\", %s): %s", peercfg.Host, err)
-		}
-		peer.addr = addr_struct.String()
-		if _, already := dn.peers[peer.id]; already {
-			log.Fatalf("Two peers with id %d", peer.id)
-		}
 		dn.peers[peer.id] = peer
-		dn.addr2peer[peer.addr] = peer
 		if bytes.Equal(dn.our_sk.Entity.Bytes, pk_bs) {
 			dn.us = peer
 		}
@@ -260,13 +254,13 @@ func main() {
 		dn.fresh.roots = append(dn.fresh.roots, result)
 	}
 
-	go dn.ListenForPeers()
-	go dn.ConnectToPeers()
-	if cfg.Clients.Host != "" {
+	go dn.ListenForPeers(cfg.General.ListenAt)
+	go dn.ConnectToPeers(cfg)
+	if cfg.Clients.ListenAt != "" {
 		for i := 0; i < cfg.Clients.ConcurrentTransfers; i++ {
 			dn.transferLimiter <- struct{}{}
 		}
-		go dn.ListenForClients(cfg.Clients.Host)
+		go dn.ListenForClients(cfg.Clients.ListenAt)
 	}
 	go dn.MaintainFreshness(t0, dt)
 	dn.c.Run()
