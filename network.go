@@ -104,7 +104,7 @@ func (dn *Dename) peerConnected(conn net.Conn, openedByUs bool) {
 		return
 	}
 
-	shared, err := dn.our_sk.CanonicalKeyAgreement(peer.PK())
+	shared, err := dn.our_sk.KeyAgreement(&peer.PublicKey)
 	if err != nil {
 		return
 	}

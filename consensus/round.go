@@ -9,7 +9,6 @@ import (
 	"github.com/andres-erbsen/dename/pgutil"
 	"github.com/andres-erbsen/dename/prng"
 	"github.com/andres-erbsen/dename/ringchannel"
-	"github.com/andres-erbsen/sgp"
 	"log"
 	"sort"
 	"sync"
@@ -51,7 +50,8 @@ type round struct {
 	our_round_key *[32]byte  // const
 	shared_prng   *prng.PRNG // pointer set at the end of key handler after
 
-	signed_result *sgp.Signed
+	signed_result        SignedConsensusResult
+	signatures_on_result int
 }
 
 func newRound(id int64, t time.Time, c *Consensus) (r *round) {
@@ -253,10 +253,10 @@ func (r *round) commitToQueue() {
 func (r *round) startHandlingCommitments() {
 	remaining := len(r.c.Peers) - 1
 	r.c.router.Receive(r.Id, COMMITMENT, func(msg *ConsensusMSG) bool {
-		commitment_bs, err := r.c.Peers[*msg.Server].PK().Verify(
+		commitment_bs, err := r.c.Peers[*msg.Server].Verify(
 			msg.Commitment, r.c.sign_tags[COMMITMENT])
 		if err != nil {
-			log.Fatalf("peer.PK().Verify(bs, r.c.sign_tags[COMMITMENT]): %s", err)
+			log.Fatalf("peer.Verify(bs, r.c.sign_tags[COMMITMENT]): %s", err)
 		}
 		commitment := new(Commitment)
 		if err := proto.Unmarshal(commitment_bs, commitment); err != nil {
@@ -286,9 +286,9 @@ func (r *round) startHandlingAcknowledgements() {
 	remaining := len(r.c.Peers) - 1
 	r.c.router.Receive(r.Id, ACKNOWLEDGEMENT, func(msg *ConsensusMSG) bool {
 		peer := r.c.Peers[*msg.Server]
-		ack_bs, err := peer.PK().Verify(msg.Ack, r.c.sign_tags[ACKNOWLEDGEMENT])
+		ack_bs, err := peer.Verify(msg.Ack, r.c.sign_tags[ACKNOWLEDGEMENT])
 		if err != nil {
-			log.Fatalf("peer.PK().Verify(msg.Ack, r.c.sign_tags[ACKNOWLEDGEMENT]): %s", err)
+			log.Fatalf("peer.Verify(msg.Ack, r.c.sign_tags[ACKNOWLEDGEMENT]): %s", err)
 		}
 		ack := new(Acknowledgement)
 		if err := proto.Unmarshal(ack_bs, ack); err != nil {
@@ -410,12 +410,11 @@ func (r *round) Publish() {
 	if err != nil {
 		panic(err)
 	}
-	r.signed_result = r.c.our_sk.SignPb(publish_bs, r.c.sign_tags[PUBLISH])
+	sig := r.c.our_sk.SignDetached(publish_bs, r.c.sign_tags[PUBLISH])
+	r.signed_result.ConsensusResult = publish_bs
+	r.signed_result.Signatures = [][]byte{sig}
+	r.signed_result.Signers = []int64{r.c.our_id}
 	// do not set r.SignedResult :: []byte yet, wait for peers' signatures
-	signed_bs, err := proto.Marshal(r.signed_result)
-	if err != nil {
-		panic(err)
-	}
 	rs, err := r.c.db.Exec(`UPDATE rounds SET result = $1 WHERE id = $2
 			AND result IS NULL`, r.Result, r.Id)
 	if err != nil {
@@ -425,7 +424,13 @@ func (r *round) Publish() {
 		log.Fatalf("UPDATE rounds SET result affected %d rows", n)
 	}
 	r.c.broadcast(&ConsensusMSG{Server: &r.c.our_id,
-		Round: &r.Id, Publish: &Result{ConsensusResult: signed_bs, Aux: aux}})
+		Round: &r.Id, Publish: &Result{Canonical: &r.signed_result, Aux: aux}})
+	// initialize signed_result for other peers' signatures
+	r.signed_result.Signatures = make([][]byte, len(r.c.Peers))
+	r.signed_result.Signers = make([]int64, len(r.c.Peers))
+	r.signed_result.Signatures[r.signatures_on_result] = sig
+	r.signed_result.Signers[r.signatures_on_result] = r.c.our_id
+	r.signatures_on_result++
 	close(r.afterWeHavePublished)
 }
 
@@ -434,28 +439,22 @@ func (r *round) Publish() {
 // the queues, startHandlingPublishes is called right before we reveal the key used to
 // encrypt our queue.
 func (r *round) startHandlingPublishes() {
-	// actually chan *sgp.Signed
+	// actually chan *ConsensusMSG
 	publishesIn := make(chan interface{})
 	publishesNext := make(chan interface{})
 	go ringchannel.RingIQ(publishesIn, publishesNext)
 	hasPublished := make(map[int64]struct{})
 	r.c.router.Receive(r.Id, PUBLISH, func(msg *ConsensusMSG) bool {
-		signed := new(sgp.Signed)
-		err := proto.Unmarshal(msg.Publish.ConsensusResult, signed)
-		if err != nil {
-			log.Fatalf("Bad publish from %d: %f", *msg.Server, err)
+		crs := msg.Publish.Canonical
+		if len(crs.Signatures) != 1 {
+			log.Fatalf("!= 1 signatures for publish from %d: %v", *msg.Server, crs.Signatures)
 		}
-		if len(signed.Sigs) != 1 {
-			log.Fatalf("len(signed.Sigs) != 1 for publish from %d", *msg.Server)
-		}
-		if len(signed.KeyIds) != 1 {
-			log.Fatalf("len(signed.KeyIds) != 1 for publish from %d", *msg.Server)
-		}
-		if !r.c.Peers[*msg.Server].PK().VerifyPb(signed, r.c.sign_tags[PUBLISH]) {
+		if err := r.c.Peers[*msg.Server].VerifyDetached(crs.ConsensusResult,
+			crs.Signatures[0], r.c.sign_tags[PUBLISH]); err != nil {
 			log.Fatalf("Invalid signature on publish from %d: %f", *msg.Server, err)
 		}
 		*r.AuxResults[*msg.Server] = msg.Publish.Aux
-		_, err = r.c.db.Exec(`INSERT INTO auxresults(round,sender,result)
+		_, err := r.c.db.Exec(`INSERT INTO auxresults(round,sender,result)
 			VALUES($1,$2,$3)`, *msg.Round, *msg.Server, msg.Publish.Aux)
 		if err != nil && !pgutil.IsError(err, pgutil.ErrUniqueViolation) {
 			log.Fatalf("Insert aux result: %s", err)
@@ -463,7 +462,7 @@ func (r *round) startHandlingPublishes() {
 		if _, already := hasPublished[*msg.Server]; !already {
 			hasPublished[*msg.Server] = struct{}{}
 			// Continue verification once we've published
-			publishesIn <- signed
+			publishesIn <- msg
 		}
 		done := len(hasPublished) == len(r.c.Peers)-1
 		if done {
@@ -475,14 +474,16 @@ func (r *round) startHandlingPublishes() {
 		<-r.afterWeHavePublished
 		// Finish verifying & aggregating publishes
 		for item := range publishesNext {
-			signed := item.(*sgp.Signed)
-			if !bytes.Equal(signed.Message, r.signed_result.Message) {
+			msg := item.(*ConsensusMSG)
+			crs := msg.Publish.Canonical
+			if !bytes.Equal(crs.ConsensusResult, r.signed_result.ConsensusResult) {
 				log.Fatalf("Peer deviates from consensus")
 			}
-			r.signed_result.Sigs = append(r.signed_result.Sigs, signed.Sigs[0])
-			r.signed_result.KeyIds = append(r.signed_result.KeyIds, signed.KeyIds[0])
+			r.signed_result.Signatures[r.signatures_on_result] = crs.Signatures[0]
+			r.signed_result.Signers[r.signatures_on_result] = *msg.Server
 		}
-		signed_result_bs, err := proto.Marshal(r.signed_result)
+		r.signatures_on_result++
+		signed_result_bs, err := proto.Marshal(&r.signed_result)
 		if err != nil {
 			panic(err)
 		}

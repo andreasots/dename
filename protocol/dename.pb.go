@@ -2,6 +2,24 @@
 // source: dename.proto
 // DO NOT EDIT!
 
+/*
+Package protocol is a generated protocol buffer package.
+
+It is generated from these files:
+	dename.proto
+
+It has these top-level messages:
+	PublicKey
+	Identity
+	TransferName
+	AcceptTransfer
+	SignedAcceptedTransfer
+	C2SMessage
+	S2CMessage
+	LookupResponse
+	SignedFreshnessAssertion
+	FreshnessAssertion
+*/
 package protocol
 
 import proto "code.google.com/p/goprotobuf/proto"
@@ -13,19 +31,59 @@ var _ = proto.Marshal
 var _ = &json.SyntaxError{}
 var _ = math.Inf
 
-type TransferName struct {
-	PublicKey        []byte `protobuf:"bytes,1,req,name=public_key" json:"public_key,omitempty"`
-	Name             []byte `protobuf:"bytes,2,req,name=name" json:"name,omitempty"`
+type PublicKey struct {
+	Ed25519          []byte `protobuf:"bytes,1,opt,name=ed25519" json:"ed25519,omitempty"`
+	Curve25519       []byte `protobuf:"bytes,2,opt,name=curve25519" json:"curve25519,omitempty"`
 	XXX_unrecognized []byte `json:"-"`
+}
+
+func (m *PublicKey) Reset()         { *m = PublicKey{} }
+func (m *PublicKey) String() string { return proto.CompactTextString(m) }
+func (*PublicKey) ProtoMessage()    {}
+
+func (m *PublicKey) GetEd25519() []byte {
+	if m != nil {
+		return m.Ed25519
+	}
+	return nil
+}
+
+func (m *PublicKey) GetCurve25519() []byte {
+	if m != nil {
+		return m.Curve25519
+	}
+	return nil
+}
+
+type Identity struct {
+	Dename           *PublicKey `protobuf:"bytes,1,req,name=dename" json:"dename,omitempty"`
+	XXX_unrecognized []byte     `json:"-"`
+}
+
+func (m *Identity) Reset()         { *m = Identity{} }
+func (m *Identity) String() string { return proto.CompactTextString(m) }
+func (*Identity) ProtoMessage()    {}
+
+func (m *Identity) GetDename() *PublicKey {
+	if m != nil {
+		return m.Dename
+	}
+	return nil
+}
+
+type TransferName struct {
+	NewIdentity      *Identity `protobuf:"bytes,1,req,name=new_identity" json:"new_identity,omitempty"`
+	Name             []byte    `protobuf:"bytes,2,req,name=name" json:"name,omitempty"`
+	XXX_unrecognized []byte    `json:"-"`
 }
 
 func (m *TransferName) Reset()         { *m = TransferName{} }
 func (m *TransferName) String() string { return proto.CompactTextString(m) }
 func (*TransferName) ProtoMessage()    {}
 
-func (m *TransferName) GetPublicKey() []byte {
+func (m *TransferName) GetNewIdentity() *Identity {
 	if m != nil {
-		return m.PublicKey
+		return m.NewIdentity
 	}
 	return nil
 }
@@ -38,9 +96,10 @@ func (m *TransferName) GetName() []byte {
 }
 
 type AcceptTransfer struct {
-	Transfer         []byte `protobuf:"bytes,1,req,name=transfer" json:"transfer,omitempty"`
-	FreshRoot        []byte `protobuf:"bytes,2,req,name=fresh_root" json:"fresh_root,omitempty"`
-	XXX_unrecognized []byte `json:"-"`
+	Transfer          []byte `protobuf:"bytes,1,req,name=transfer" json:"transfer,omitempty"`
+	TransferSignature []byte `protobuf:"bytes,2,req,name=transfer_signature" json:"transfer_signature,omitempty"`
+	FreshRoot         []byte `protobuf:"bytes,3,req,name=fresh_root" json:"fresh_root,omitempty"`
+	XXX_unrecognized  []byte `json:"-"`
 }
 
 func (m *AcceptTransfer) Reset()         { *m = AcceptTransfer{} }
@@ -54,6 +113,13 @@ func (m *AcceptTransfer) GetTransfer() []byte {
 	return nil
 }
 
+func (m *AcceptTransfer) GetTransferSignature() []byte {
+	if m != nil {
+		return m.TransferSignature
+	}
+	return nil
+}
+
 func (m *AcceptTransfer) GetFreshRoot() []byte {
 	if m != nil {
 		return m.FreshRoot
@@ -61,13 +127,37 @@ func (m *AcceptTransfer) GetFreshRoot() []byte {
 	return nil
 }
 
-type C2SMessage struct {
-	GetRoot          *bool  `protobuf:"varint,1,opt,name=get_root" json:"get_root,omitempty"`
-	Transfer         []byte `protobuf:"bytes,2,opt,name=transfer" json:"transfer,omitempty"`
-	Lookup           []byte `protobuf:"bytes,3,opt,name=lookup" json:"lookup,omitempty"`
-	GetFreshness     *bool  `protobuf:"varint,4,opt,name=get_freshness" json:"get_freshness,omitempty"`
-	RegToken         []byte `protobuf:"bytes,5,opt,name=reg_token" json:"reg_token,omitempty"`
+type SignedAcceptedTransfer struct {
+	Accept           []byte `protobuf:"bytes,1,req,name=accept" json:"accept,omitempty"`
+	Signature        []byte `protobuf:"bytes,2,req,name=signature" json:"signature,omitempty"`
 	XXX_unrecognized []byte `json:"-"`
+}
+
+func (m *SignedAcceptedTransfer) Reset()         { *m = SignedAcceptedTransfer{} }
+func (m *SignedAcceptedTransfer) String() string { return proto.CompactTextString(m) }
+func (*SignedAcceptedTransfer) ProtoMessage()    {}
+
+func (m *SignedAcceptedTransfer) GetAccept() []byte {
+	if m != nil {
+		return m.Accept
+	}
+	return nil
+}
+
+func (m *SignedAcceptedTransfer) GetSignature() []byte {
+	if m != nil {
+		return m.Signature
+	}
+	return nil
+}
+
+type C2SMessage struct {
+	GetRoot          *bool                   `protobuf:"varint,1,opt,name=get_root" json:"get_root,omitempty"`
+	Transfer         *SignedAcceptedTransfer `protobuf:"bytes,2,opt,name=transfer" json:"transfer,omitempty"`
+	Lookup           []byte                  `protobuf:"bytes,3,opt,name=lookup" json:"lookup,omitempty"`
+	GetFreshness     *bool                   `protobuf:"varint,4,opt,name=get_freshness" json:"get_freshness,omitempty"`
+	RegToken         []byte                  `protobuf:"bytes,5,opt,name=reg_token" json:"reg_token,omitempty"`
+	XXX_unrecognized []byte                  `json:"-"`
 }
 
 func (m *C2SMessage) Reset()         { *m = C2SMessage{} }
@@ -81,7 +171,7 @@ func (m *C2SMessage) GetGetRoot() bool {
 	return false
 }
 
-func (m *C2SMessage) GetTransfer() []byte {
+func (m *C2SMessage) GetTransfer() *SignedAcceptedTransfer {
 	if m != nil {
 		return m.Transfer
 	}
@@ -110,20 +200,20 @@ func (m *C2SMessage) GetRegToken() []byte {
 }
 
 type S2CMessage struct {
-	Root                []byte          `protobuf:"bytes,1,opt,name=root" json:"root,omitempty"`
-	TransferLooksGood   *bool           `protobuf:"varint,2,opt,name=transfer_looks_good" json:"transfer_looks_good,omitempty"`
-	LookupResponse      *LookupResponse `protobuf:"bytes,3,opt,name=lookup_response" json:"lookup_response,omitempty"`
-	FreshnessAssertions [][]byte        `protobuf:"bytes,4,rep,name=freshness_assertions" json:"freshness_assertions,omitempty"`
-	XXX_unrecognized    []byte          `json:"-"`
+	RootConsensus     []byte                      `protobuf:"bytes,1,opt,name=root_consensus" json:"root_consensus,omitempty"`
+	TransferLooksGood *bool                       `protobuf:"varint,2,opt,name=transfer_looks_good" json:"transfer_looks_good,omitempty"`
+	LookupResponse    *LookupResponse             `protobuf:"bytes,3,opt,name=lookup_response" json:"lookup_response,omitempty"`
+	Freshness         []*SignedFreshnessAssertion `protobuf:"bytes,4,rep,name=freshness" json:"freshness,omitempty"`
+	XXX_unrecognized  []byte                      `json:"-"`
 }
 
 func (m *S2CMessage) Reset()         { *m = S2CMessage{} }
 func (m *S2CMessage) String() string { return proto.CompactTextString(m) }
 func (*S2CMessage) ProtoMessage()    {}
 
-func (m *S2CMessage) GetRoot() []byte {
+func (m *S2CMessage) GetRootConsensus() []byte {
 	if m != nil {
-		return m.Root
+		return m.RootConsensus
 	}
 	return nil
 }
@@ -142,9 +232,9 @@ func (m *S2CMessage) GetLookupResponse() *LookupResponse {
 	return nil
 }
 
-func (m *S2CMessage) GetFreshnessAssertions() [][]byte {
+func (m *S2CMessage) GetFreshness() []*SignedFreshnessAssertion {
 	if m != nil {
-		return m.FreshnessAssertions
+		return m.Freshness
 	}
 	return nil
 }
@@ -169,6 +259,38 @@ func (m *LookupResponse) GetPath() []byte {
 func (m *LookupResponse) GetPublicKey() []byte {
 	if m != nil {
 		return m.PublicKey
+	}
+	return nil
+}
+
+type SignedFreshnessAssertion struct {
+	Server           *int64 `protobuf:"varint,1,req,name=server" json:"server,omitempty"`
+	Assertion        []byte `protobuf:"bytes,2,req,name=assertion" json:"assertion,omitempty"`
+	Signature        []byte `protobuf:"bytes,3,req,name=signature" json:"signature,omitempty"`
+	XXX_unrecognized []byte `json:"-"`
+}
+
+func (m *SignedFreshnessAssertion) Reset()         { *m = SignedFreshnessAssertion{} }
+func (m *SignedFreshnessAssertion) String() string { return proto.CompactTextString(m) }
+func (*SignedFreshnessAssertion) ProtoMessage()    {}
+
+func (m *SignedFreshnessAssertion) GetServer() int64 {
+	if m != nil && m.Server != nil {
+		return *m.Server
+	}
+	return 0
+}
+
+func (m *SignedFreshnessAssertion) GetAssertion() []byte {
+	if m != nil {
+		return m.Assertion
+	}
+	return nil
+}
+
+func (m *SignedFreshnessAssertion) GetSignature() []byte {
+	if m != nil {
+		return m.Signature
 	}
 	return nil
 }

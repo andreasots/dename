@@ -1,8 +1,9 @@
 package main
 
 import (
+	"encoding/binary"
 	"github.com/andres-erbsen/dename/dnmclient"
-	"github.com/andres-erbsen/sgp"
+	"github.com/andres-erbsen/dename/protocol"
 	"log"
 	"os"
 )
@@ -11,9 +12,13 @@ func main() {
 	if len(os.Args) != 4 {
 		log.Fatal("USAGE: ", os.Args[0], " sk NAME REGTOKEN")
 	}
-	sk, err := sgp.LoadSecretKeyFromFile(os.Args[1])
+	var sk protocol.Ed25519Secret
+	skfile, err := os.Open(os.Args[1])
 	if err != nil {
-		log.Fatal("LoadSecretKeyFromFile: ", err)
+		log.Fatalf("Cannot open sk file \"%s\": %s", os.Args[1], err)
+	}
+	if err := binary.Read(skfile, binary.LittleEndian, &sk); err != nil {
+		log.Fatalf("Load secret key from \"sk\": %s", err)
 	}
 
 	c, err := dnmclient.NewFromFile("dnmlookup.cfg", nil)

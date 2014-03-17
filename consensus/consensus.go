@@ -7,7 +7,6 @@ import (
 	"github.com/andres-erbsen/dename/pgutil"
 	"github.com/andres-erbsen/dename/prng"
 	"github.com/andres-erbsen/dename/ringchannel"
-	"github.com/andres-erbsen/sgp"
 	"log"
 	"time"
 )
@@ -23,12 +22,18 @@ type QueueProcessor func(map[int64]*[][]byte, *prng.PRNG, int64) ([]byte, []byte
 
 type Peer interface {
 	ConsensusSend([]byte) error
-	PK() *sgp.Entity
+	Verify(signed_msg []byte, tag uint64) ([]byte, error)
+	VerifyDetached(msg, sig []byte, tag uint64) error
+}
+
+type signer interface {
+	Sign(msg []byte, tag uint64) []byte
+	SignDetached(msg []byte, tag uint64) []byte
 }
 
 type Consensus struct {
 	db             *sql.DB
-	our_sk         *sgp.SecretKey
+	our_sk         signer
 	our_id         int64
 	QueueProcessor QueueProcessor
 	genesisTime    time.Time
@@ -51,7 +56,7 @@ type serialized_msg struct {
 	msg   *ConsensusMSG
 }
 
-func NewConsensus(db *sql.DB, our_sk *sgp.SecretKey, our_id int64,
+func NewConsensus(db *sql.DB, our_sk signer, our_id int64,
 	queueProcessor QueueProcessor, genesisTime time.Time,
 	tickInterval time.Duration, peers map[int64]Peer, peer_ids []int64,
 	callback func(*RoundSummary) bool, sign_tags map[int]uint64) *Consensus {

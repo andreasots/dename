@@ -6,10 +6,7 @@ then
 	exit 1
 fi
 
-keygen=$(which keygen)
-if [[ -z "$keygen" ]]; then
-	keygen=./keygen
-fi
+keygen=./keygen/keygen
 
 dir="$1"
 count="$2"

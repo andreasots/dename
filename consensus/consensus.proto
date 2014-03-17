@@ -31,11 +31,17 @@ message Acknowledgement {
 }
 
 message Result {
-	required bytes consensus_result = 1; // signed
+	required SignedConsensusResult canonical = 1; // signed
 	required bytes aux = 2;
 }
 
 message ConsensusResult {
 	required int64 round = 1;
 	required bytes result = 2;
+}
+
+message SignedConsensusResult {
+	required bytes ConsensusResult = 1;
+	repeated bytes Signatures = 2;
+	repeated int64 Signers = 3;
 }

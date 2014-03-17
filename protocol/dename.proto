@@ -1,33 +1,54 @@
 package protocol;
 
+message PublicKey {
+	optional bytes ed25519 = 1;
+	optional bytes curve25519 = 2;
+}
+
+message Identity {
+	required PublicKey dename = 1;
+}
+
 message TransferName {
-        required bytes public_key = 1;
+        required Identity new_identity = 1;
         required bytes name = 2;
 }
 
 message AcceptTransfer {
         required bytes transfer = 1;
-        required bytes fresh_root = 2;
+        required bytes transfer_signature = 2;
+        required bytes fresh_root = 3;
+}
+
+message SignedAcceptedTransfer {
+	required bytes accept = 1;
+	required bytes signature  = 2;
 }
 
 message C2SMessage {
 	optional bool get_root = 1;
-	optional bytes transfer = 2;
+	optional SignedAcceptedTransfer transfer = 2;
 	optional bytes lookup = 3;
 	optional bool get_freshness = 4;
 	optional bytes reg_token = 5;
 }
 
 message S2CMessage {
-	optional bytes root = 1;
+	optional bytes root_consensus = 1;
 	optional bool transfer_looks_good = 2;
 	optional LookupResponse lookup_response = 3;
-	repeated bytes freshness_assertions = 4; // signed FreshnessAssertions
+	repeated SignedFreshnessAssertion freshness = 4;
 }
 
 message LookupResponse {
 	optional bytes path = 2;
 	optional bytes public_key = 3;
+}
+
+message SignedFreshnessAssertion {
+	required int64 server = 1;
+	required bytes assertion = 2;
+	required bytes signature = 3;
 }
 
 message FreshnessAssertion {

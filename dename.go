@@ -16,7 +16,6 @@ import (
 	"github.com/andres-erbsen/dename/pgutil"
 	"github.com/andres-erbsen/dename/prng"
 	"github.com/andres-erbsen/dename/protocol"
-	"github.com/andres-erbsen/sgp"
 	"github.com/daniel-ziegler/merklemap"
 	"io"
 	"io/ioutil"
@@ -34,9 +33,14 @@ import (
 
 var true_, false_ = true, false // cannot take address of constant...
 
+type secretKey struct {
+	protocol.Curve25519Secret
+	protocol.Ed25519Secret
+}
+
 type Peer struct {
+	protocol.PublicKey
 	id int64
-	pk *sgp.Entity
 
 	sync.Mutex
 	// mutable:
@@ -46,13 +50,9 @@ type Peer struct {
 	havePreferredConnection bool
 }
 
-func (peer *Peer) PK() *sgp.Entity {
-	return peer.pk
-}
-
 type Dename struct {
 	db       *sql.DB
-	our_sk   sgp.SecretKey
+	our_sk   secretKey
 	us       *Peer
 	peers    map[int64]*Peer
 	peer_ids []int64
@@ -164,8 +164,11 @@ func main() {
 	}
 	defer dn.sql_rainbow_insert.Close()
 
-	dn.our_sk, err = sgp.LoadSecretKeyFromFile(cfg.General.SecretKeyFile)
+	skfile, err := os.Open(cfg.General.SecretKeyFile)
 	if err != nil {
+		log.Fatalf("Cannot open sk file \"%s\": %s", cfg.General.SecretKeyFile, err)
+	}
+	if err := binary.Read(skfile, binary.LittleEndian, &dn.our_sk); err != nil {
 		log.Fatalf("Load secret key from \"sk\": %s", err)
 	}
 
@@ -180,7 +183,7 @@ func main() {
 	}
 
 	for id_str, peercfg := range cfg.Peer {
-		peer := &Peer{pk: new(sgp.Entity)}
+		peer := new(Peer)
 		if _, err := fmt.Sscan(id_str, &peer.id); err != nil {
 			log.Fatal("Peer names must be integers, for example [peer \"1\"]")
 		}
@@ -191,13 +194,16 @@ func main() {
 		if err != nil {
 			log.Fatalf("Bad base64 as public key: %s (for %d)", err, peer.id)
 		}
-		if err := peer.pk.Parse(pk_bs); err != nil {
+		if err := proto.Unmarshal(pk_bs, &peer.PublicKey); err != nil {
 			log.Fatalf("Bad pk for %d: %s; %x", peer.id, err, pk_bs)
 		}
 		dn.peers[peer.id] = peer
-		if bytes.Equal(dn.our_sk.Entity.Bytes, pk_bs) {
+		if _, err := peer.Verify(dn.our_sk.Sign([]byte{}, 0), 0); err == nil {
 			dn.us = peer
 		}
+	}
+	if dn.us == nil {
+		log.Fatalf("Our secret key does not match any of the peers' public keys")
 	}
 
 	dn.peer_ids = make([]int64, 0, len(dn.peers))
@@ -318,7 +324,7 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 
 	// fmt.Printf("(%d, 'handle'),\n", time.Now().UnixNano())
 	if msg.GetRoot != nil {
-		reply.Root = round.SignedResult
+		reply.RootConsensus = round.SignedResult
 	}
 	if msg.Lookup != nil {
 		dn.HandleClientLookup(reply, round.Snapshot, msg.Lookup)
@@ -347,9 +353,12 @@ func (dn *Dename) HandleClientLookup(reply *protocol.S2CMessage,
 	}
 	reply.LookupResponse = new(protocol.LookupResponse)
 	defer mapHandle.Close()
-	pk, path := dn.Resolve(mapHandle, name)
-	if pk != nil {
-		reply.LookupResponse.PublicKey = pk.Bytes
+	iden, path := dn.Resolve(mapHandle, name)
+	if iden != nil {
+		reply.LookupResponse.PublicKey, err = proto.Marshal(iden)
+		if err != nil {
+			panic(err)
+		}
 		reply.LookupResponse.Path, err = proto.Marshal(path)
 		if err != nil {
 			panic(err)
@@ -360,29 +369,29 @@ func (dn *Dename) HandleClientLookup(reply *protocol.S2CMessage,
 }
 
 // Resolve does a Name -> PublicKey,MerkleProof lookup. Returns nil if not found
-func (dn *Dename) Resolve(mapHandle *merklemap.Handle, name []byte) (*sgp.Entity, *merklemap.MerklePath) {
+func (dn *Dename) Resolve(mapHandle *merklemap.Handle, name []byte) (*protocol.Identity, *merklemap.MerklePath) {
 	// fmt.Printf("(%d, 'resolve'),\n", time.Now().UnixNano())
-	pk_hash, path, err := mapHandle.GetPath(merklemap.Hash(name))
+	idhash, path, err := mapHandle.GetPath(merklemap.Hash(name))
 	if err != nil {
 		log.Fatalf("mapHandle.GetPath(h(%s)): %s", string(name), err)
-	} else if pk_hash == nil {
+	} else if idhash == nil {
 		return nil, nil
 	}
-	var pk_bs []byte
+	var iden_bs []byte
 	// fmt.Printf("(%d, 'select rainbow'),\n", time.Now().UnixNano())
-	err = dn.sql_rainbow_lookup.QueryRow(pk_hash[:]).Scan(&pk_bs)
+	err = dn.sql_rainbow_lookup.QueryRow(idhash[:]).Scan(&iden_bs)
 	if err != nil && err != sql.ErrNoRows {
 		log.Fatalf("SELECT pk for \"%s\" from db: %s", string(name), err)
 	}
-	pk := new(sgp.Entity)
-	if err := pk.Parse(pk_bs); err != nil {
+	iden := new(protocol.Identity)
+	if err := proto.Unmarshal(iden_bs, iden); err != nil {
 		log.Fatal("Bad pk in database")
 	}
-	return pk, path
+	return iden, path
 }
 
 func (dn *Dename) HandleClientTransfer(reply *protocol.S2CMessage, round int64,
-	regtoken, rq_bs []byte) {
+	regtoken []byte, sig_ack_xfer *protocol.SignedAcceptedTransfer) {
 	<-dn.transferLimiter
 	defer func() { dn.transferLimiter <- struct{}{} }()
 	reply.TransferLooksGood = &false_
@@ -413,7 +422,7 @@ func (dn *Dename) HandleClientTransfer(reply *protocol.S2CMessage, round int64,
 		}()
 		break
 	}
-	name, old_pk, _, err := dn.ValidateRequest(round+1, rq_bs)
+	name, old_pk, _, err := dn.ValidateRequest(round+1, sig_ack_xfer)
 	if err != nil {
 		return
 	}
@@ -435,15 +444,20 @@ func (dn *Dename) HandleClientTransfer(reply *protocol.S2CMessage, round int64,
 	dn.ongoing_transfers[string(name)] = processed
 	dn.ongoing_transfers_mutex.Unlock()
 	// fmt.Printf("(%d, 'hand to round'),\n", time.Now().UnixNano())
+	rq_bs, err := proto.Marshal(sig_ack_xfer)
+	if err != nil {
+		panic(err)
+	}
 	dn.c.IncomingRequests <- rq_bs
 	// TODO: signed promise to transfer the name
 
 	<-processed
 }
 
-func (dn *Dename) ValidateRequest(dst_round int64, rq_bs []byte) (name []byte,
-	old_pk, new_pk *sgp.Entity, err error) {
-	name, new_pk, proposedRoot, err := NaiveParseRequest(rq_bs)
+func (dn *Dename) ValidateRequest(dst_round int64,
+	sig_ack_xfer *protocol.SignedAcceptedTransfer) (name []byte,
+	old_iden, iden *protocol.Identity, err error) {
+	name, new_iden, proposedRoot, err := NaiveParseRequest(sig_ack_xfer)
 	if err != nil {
 		return
 	}
@@ -471,57 +485,50 @@ func (dn *Dename) ValidateRequest(dst_round int64, rq_bs []byte) (name []byte,
 			log.Fatalf("mm.GetSnapshot(%d).OpenHandle(): %s", snapshot, err)
 		}
 		defer mapHandle.Close()
-		old_pk, _ = dn.Resolve(mapHandle, name)
+		old_iden, _ = dn.Resolve(mapHandle, name)
 		close(resolve_done)
 	}()
 
-	accept_bs, err := new_pk.Verify(rq_bs, protocol.SIGN_TAG_ACCEPT)
-	if err != nil {
+	if err := new_iden.Dename.VerifyDetached(sig_ack_xfer.Accept,
+		sig_ack_xfer.Signature, protocol.SIGN_TAG_ACCEPT); err != nil {
 		return nil, nil, nil, err
 	}
 	accept := new(protocol.AcceptTransfer)
-	if err := proto.Unmarshal(accept_bs, accept); err != nil {
+	if err := proto.Unmarshal(sig_ack_xfer.Accept, accept); err != nil {
 		return nil, nil, nil, err
 	}
 
 	<-resolve_done
-	if old_pk != nil {
-		if _, err = old_pk.Verify(accept.Transfer, protocol.SIGN_TAG_TRANSFER); err != nil {
+	if old_iden != nil {
+		if _, err = old_iden.Dename.Verify(accept.Transfer, protocol.SIGN_TAG_TRANSFER); err != nil {
 			return nil, nil, nil, err
 		}
 	}
-	return name, old_pk, new_pk, nil
+	return name, old_iden, new_iden, nil
 }
 
-func NaiveParseRequest(accept_signed_bs []byte) ([]byte, *sgp.Entity, []byte, error) {
-	accept_signed := new(sgp.Signed)
-	if err := proto.Unmarshal(accept_signed_bs, accept_signed); err != nil {
-		return nil, nil, nil, err
-	}
+func NaiveParseRequest(sig_ack_xfer *protocol.SignedAcceptedTransfer) (
+	[]byte, *protocol.Identity, []byte, error) {
 	accept := new(protocol.AcceptTransfer)
-	if err := proto.Unmarshal(accept_signed.Message, accept); err != nil {
-		return nil, nil, nil, err
-	}
-	transfer_signed := new(sgp.Signed)
-	if err := proto.Unmarshal(accept.Transfer, transfer_signed); err != nil {
+	if err := proto.Unmarshal(sig_ack_xfer.Accept, accept); err != nil {
 		return nil, nil, nil, err
 	}
 	transfer := new(protocol.TransferName)
-	if err := proto.Unmarshal(transfer_signed.Message, transfer); err != nil {
+	if err := proto.Unmarshal(accept.Transfer, transfer); err != nil {
 		return nil, nil, nil, err
 	}
-	new_pk := new(sgp.Entity)
-	if err := new_pk.Parse(transfer.PublicKey); err != nil {
-		return nil, nil, nil, err
-	}
-	return transfer.Name, new_pk, accept.FreshRoot, nil
+	return transfer.Name, transfer.NewIdentity, accept.FreshRoot, nil
 }
 
 func (dn *Dename) HandleClientFreshness(reply *protocol.S2CMessage, round int64) {
 	dn.round_completed.Lock()
 	defer dn.round_completed.Unlock()
 	for _, aux_bs_p := range dn.round_completed.AuxResults {
-		reply.FreshnessAssertions = append(reply.FreshnessAssertions, *aux_bs_p)
+		aux := new(protocol.SignedFreshnessAssertion)
+		if err := proto.Unmarshal(*aux_bs_p, aux); err != nil {
+			panic(err)
+		}
+		reply.Freshness = append(reply.Freshness, aux)
 	}
 }
 
@@ -577,7 +584,11 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 		for _, i := range rnd.Perm(len(peer_rq_map)) {
 			peer_id := int64(dn.peer_ids[i])
 			for _, rq_bs := range *peer_rq_map[peer_id] {
-				name, _, pk, err := dn.ValidateRequest(round, rq_bs)
+				sig_ack_xfer := new(protocol.SignedAcceptedTransfer)
+				if err := proto.Unmarshal(rq_bs, sig_ack_xfer); err != nil {
+					log.Fatalf("Malformed transfer in QueueProcessor")
+				}
+				name, _, iden, err := dn.ValidateRequest(round, sig_ack_xfer)
 				if peer_id == dn.us.id {
 					names_we_transferred = append(names_we_transferred, name)
 				}
@@ -590,11 +601,15 @@ func (dn *Dename) QueueProcessor(peer_rq_map map[int64]*[][]byte,
 					continue
 				}
 				name_modified[string(name)] = peer_id
-				pk_hash := merklemap.Hash(pk.Bytes)
-				if err = mapHandle.Set(merklemap.Hash(name), pk_hash); err != nil {
-					log.Fatalf("mapHandle.Set(name,pk): %s", err)
+				iden_bs, err := proto.Marshal(iden)
+				if err != nil {
+					panic(err)
 				}
-				_, err = dn.sql_rainbow_insert.Exec(pk_hash[:], pk.Bytes)
+				idhash := merklemap.Hash(iden_bs)
+				if err = mapHandle.Set(merklemap.Hash(name), idhash); err != nil {
+					log.Fatalf("mapHandle.Set(name,idash): %s", err)
+				}
+				_, err = dn.sql_rainbow_insert.Exec(idhash[:], iden_bs)
 				if err != nil && !pgutil.IsError(err, pgutil.ErrUniqueViolation) {
 					log.Fatalf("QueueProcessor: rainbow_insert.Exec(...): %s", err)
 				}
@@ -677,7 +692,13 @@ func (dn *Dename) MakeFreshnessAssertion(round int64, rootHash []byte, finalized
 	if err != nil {
 		panic(err)
 	}
-	return dn.our_sk.Sign(freshness_bs, protocol.SIGN_TAG_FRESHNESS)
+	sig := dn.our_sk.SignDetached(freshness_bs, protocol.SIGN_TAG_FRESHNESS)
+	aux_bs, err := proto.Marshal(&protocol.SignedFreshnessAssertion{
+		Server: &dn.us.id, Assertion: freshness_bs, Signature: sig})
+	if err != nil {
+		panic(err)
+	}
+	return aux_bs
 }
 
 func (dn *Dename) MaintainFreshness(t0 time.Time, dt time.Duration) {
@@ -722,15 +743,22 @@ func (dn *Dename) MaintainFreshness(t0 time.Time, dt time.Duration) {
 	}
 }
 
-func (dn *Dename) FreshnessReceived(peer_id int64, freshness_signed_bs []byte) {
-	freshness_bs, err := dn.peers[peer_id].pk.Verify(freshness_signed_bs,
-		protocol.SIGN_TAG_FRESHNESS)
+func (dn *Dename) FreshnessReceived(peer_id int64, aux_bs []byte) {
+	aux := new(protocol.SignedFreshnessAssertion)
+	if err := proto.Unmarshal(aux_bs, aux); err != nil {
+		log.Fatalf("%d Unmarshal(aux_bs, SignedFreshnessAssertion): %s", peer_id, err)
+	}
+	if *aux.Server != peer_id {
+		log.Fatalf("Auxresult with server=%d from %d", *aux.Server, peer_id)
+	}
+	err := dn.peers[peer_id].VerifyDetached(aux.Assertion,
+		aux.Signature, protocol.SIGN_TAG_FRESHNESS)
 	if err != nil {
 		log.Fatalf("%d Verify(freshness_signed_bs): %s", peer_id, err)
 	}
 	freshness := new(protocol.FreshnessAssertion)
-	if err := proto.Unmarshal(freshness_bs, freshness); err != nil {
-		log.Fatalf("%d proto.Unmarshal(freshness_bs, freshness): %s", peer_id, err)
+	if err := proto.Unmarshal(aux.Assertion, freshness); err != nil {
+		log.Fatalf("%d proto.Unmarshal(aux.Assertion, freshness): %s", peer_id, err)
 	}
 	var round_present int
 	err = dn.db.QueryRow(`SELECT COUNT(1) FROM rounds WHERE id = $1 AND result = $2
@@ -741,13 +769,13 @@ func (dn *Dename) FreshnessReceived(peer_id int64, freshness_signed_bs []byte) {
 		log.Fatalf("Freshness for unknown round %d", *freshness.Round)
 	}
 	_, err = dn.db.Exec(`INSERT INTO auxresults(round,sender,result)
-		VALUES($1,$2,$3)`, *freshness.Round, peer_id, freshness_signed_bs)
+		VALUES($1,$2,$3)`, *freshness.Round, peer_id, aux_bs)
 	if err != nil {
-		log.Fatalf("Insert freshness to db %v: %s", freshness_signed_bs, err)
+		log.Fatalf("Insert freshness to db %v: %s", aux, err)
 	}
 	dn.round_completed.Lock()
 	if *freshness.Round == dn.round_completed.Id {
-		*dn.round_completed.AuxResults[peer_id] = freshness_signed_bs
+		*dn.round_completed.AuxResults[peer_id] = aux_bs
 	}
 	dn.round_completed.Unlock()
 }

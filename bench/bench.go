@@ -6,8 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"github.com/agl/ed25519"
 	"github.com/andres-erbsen/dename/dnmclient"
-	"github.com/andres-erbsen/sgp"
+	"github.com/andres-erbsen/dename/protocol"
 	"io/ioutil"
 	"log"
 	"os"
@@ -45,7 +46,13 @@ func main() {
 		connections <- struct{}{}
 	}
 	done := make(chan struct{}, n)
-	_, sk, err := sgp.GenerateKey(rand.Reader, time.Now(), time.Duration(30*24)*time.Hour)
+	pk, sk_arr, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+
+	sk := (*protocol.Ed25519Secret)(sk_arr)
+	iden := &protocol.Identity{Dename: &protocol.PublicKey{Ed25519: pk[:]}}
 
 	c, err := dnmclient.NewFromFile("dnmlookup.cfg", nil)
 	if err != nil {
@@ -53,13 +60,14 @@ func main() {
 	}
 
 	s := time.Now().UnixNano()
+	fmt.Println(s)
 	t0 := time.Now()
 	go func() {
 		for i := 0; i < n; i++ {
 			<-connections
 			go func(i int) {
 				for {
-					err := c.Register(sk, fmt.Sprint(s+int64(i)), mktoken())
+					err := c.Register(sk, iden, fmt.Sprint(s+int64(i)), mktoken())
 					if err != nil {
 						log.Print(i, err)
 						continue

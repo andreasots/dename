@@ -2,6 +2,21 @@
 // source: consensus.proto
 // DO NOT EDIT!
 
+/*
+Package consensus is a generated protocol buffer package.
+
+It is generated from these files:
+	consensus.proto
+
+It has these top-level messages:
+	ConsensusMSG
+	CommitData
+	Commitment
+	Acknowledgement
+	Result
+	ConsensusResult
+	SignedConsensusResult
+*/
 package consensus
 
 import proto "code.google.com/p/goprotobuf/proto"
@@ -183,18 +198,18 @@ func (m *Acknowledgement) GetHashOfCommitments() []byte {
 }
 
 type Result struct {
-	ConsensusResult  []byte `protobuf:"bytes,1,req,name=consensus_result" json:"consensus_result,omitempty"`
-	Aux              []byte `protobuf:"bytes,2,req,name=aux" json:"aux,omitempty"`
-	XXX_unrecognized []byte `json:"-"`
+	Canonical        *SignedConsensusResult `protobuf:"bytes,1,req,name=canonical" json:"canonical,omitempty"`
+	Aux              []byte                 `protobuf:"bytes,2,req,name=aux" json:"aux,omitempty"`
+	XXX_unrecognized []byte                 `json:"-"`
 }
 
 func (m *Result) Reset()         { *m = Result{} }
 func (m *Result) String() string { return proto.CompactTextString(m) }
 func (*Result) ProtoMessage()    {}
 
-func (m *Result) GetConsensusResult() []byte {
+func (m *Result) GetCanonical() *SignedConsensusResult {
 	if m != nil {
-		return m.ConsensusResult
+		return m.Canonical
 	}
 	return nil
 }
@@ -226,6 +241,38 @@ func (m *ConsensusResult) GetRound() int64 {
 func (m *ConsensusResult) GetResult() []byte {
 	if m != nil {
 		return m.Result
+	}
+	return nil
+}
+
+type SignedConsensusResult struct {
+	ConsensusResult  []byte   `protobuf:"bytes,1,req" json:"ConsensusResult,omitempty"`
+	Signatures       [][]byte `protobuf:"bytes,2,rep" json:"Signatures,omitempty"`
+	Signers          []int64  `protobuf:"varint,3,rep" json:"Signers,omitempty"`
+	XXX_unrecognized []byte   `json:"-"`
+}
+
+func (m *SignedConsensusResult) Reset()         { *m = SignedConsensusResult{} }
+func (m *SignedConsensusResult) String() string { return proto.CompactTextString(m) }
+func (*SignedConsensusResult) ProtoMessage()    {}
+
+func (m *SignedConsensusResult) GetConsensusResult() []byte {
+	if m != nil {
+		return m.ConsensusResult
+	}
+	return nil
+}
+
+func (m *SignedConsensusResult) GetSignatures() [][]byte {
+	if m != nil {
+		return m.Signatures
+	}
+	return nil
+}
+
+func (m *SignedConsensusResult) GetSigners() []int64 {
+	if m != nil {
+		return m.Signers
 	}
 	return nil
 }
