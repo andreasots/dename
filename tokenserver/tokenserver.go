@@ -145,14 +145,14 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 			if match(rule, email) {
 				if err := rule.handler(email); err != nil {
 					log.Printf("Error: %s", err)
-					templates.ExecuteTemplate(w, "error.html", err)
+					http.Error(w, err.Error(), http.StatusForbidden)
 				} else {
 					http.Redirect(w, r, "/success.html", http.StatusFound)
 				}
 				return
 			}
 		}
-		http.Redirect(w, r, "/index.html", http.StatusFound)
+		http.Error(w, "disallowed email", http.StatusForbidden)
 	}
 }
 
