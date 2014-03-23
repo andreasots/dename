@@ -2,5 +2,7 @@ To: {{.To}}
 Subject: Dename name registration ticket
 
 Dename name registration ticket:
-
 {{.Ticket}}
+
+If you have not downloaded dename utilities yet, you get them from
+<https://github.com/andres-erbsen/dename/>.
