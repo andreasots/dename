@@ -299,6 +299,10 @@ func (dn *Dename) HandleClient(conn net.Conn) {
 	if err != nil {
 		return
 	}
+	if sz > 1024 {
+		// limit size of client requests
+		return
+	}
 	msg_bs := make([]byte, sz)
 	_, err = io.ReadFull(conn, msg_bs)
 	if err != nil {
