@@ -1,0 +1,44 @@
+On the server:
+- Install postgresql: `sudo apt-get install postgresql postgresql-client`
+- Create a database and a user: `sudo -u postgres psql`, there
+  `CREATE USER dename WITH PASSWORD 'MyVeryGuessablePassword';`  
+  `CREATE DATABASE dename;`  
+  `GRANT ALL PRIVILEGES ON DATABASE dename to dename;`  
+- Create a new user: `useradd -m dename`, change to that user `su dename`
+
+On the mainainer machine
+- Get a `go` [compiler](<http://golang.org/doc/install) and
+  setup [GOPATH](http://golang.org/doc/code.html#GOPATH)
+- Get the code `git clone https://github.com/andres-erbsen/dename.git`
+- Run `go build` in `dename`
+- Create a working directory: `mkdir srv`
+- Generate a server keypair: `go run dename/keygen/keygen.go 1> srv/pk 2>srv/sk`
+- `cp dename/dename.cfg srv/dename.cfg` and edit it to match your server setup.
+  All values with dollar signs in them need to be changed.
+- Add `[peer $i]` declarations for the other servers. The `connectto` should
+  correspond to their `listenat` and `pk` should be the `base64` encoding of
+  their `pk` file with wihtespace removed.
+- Copy the contents of `srv` and the `dename` executable to the server.
+
+On the server:
+- `chmod +x dename; chmod go-rwx sk dename.cfg`
+- `./dename` to run the server.
+- One possible start script: `sudo -u robin -- bash -c 'cd /home/robin; ./dename
+  > stdout.$(date +%s).log 2> stderr.$(date +%s).log &'`
+
+Setting up a registration token issuer (required to serve clients):
+- `sudo -u postgres psql`, there  
+  `CREATE USER tokenserver WITH PASSWORD 'tokenpw';`  
+  `CREATE DATABASE tokendb;`  
+  `GRANT ALL PRIVILEGES ON DATABASE tokendb to tokenserver;`
+- `useradd -m tokenserver
+- `groupadd dename; usermod -aG dename tokenserver; usermod -aG dename dename`
+- `dd if=/dev/urandom bs=32 count=1 of=/home/tokenserver/tokenserver_mac_key`
+- `chmod 640 /home/tokenserver/tokenserver_mac_key`
+- `go build` in git repo folder `tokenserver`, copy that folder to server
+- `setcap 'cap_net_bind_service=+ep' ~tokenserver/tokenserver`
+- Possible script: `sudo -u tokenserver -- bash -c 'cd /home/tokenserver;
+  ./tokenserver tokenserver_mac_key > stdout.$(date +%s).log 2> stderr.$(date
++%s).log &'`
+- Configure `dename.cfg` `RegTokenMacKeyFile` to point to the keyfile.
+

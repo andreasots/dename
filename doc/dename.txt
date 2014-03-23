@@ -1,0 +1,80 @@
+The main goal of dename is to allow human-readable identifiers (names) to be
+securely and unambiguously resolved to public keys, thus squaring the
+[Zooko's triangle](http://en.wikipedia.org/wiki/Zooko's_triangle)
+ and making public-key cryptography easier to use.
+To achieve this, a universally known (but not trusted) group
+of servers continuously runs a program that maintains the name-identity mapping.
+Clients can contact any of the servers to look up names and
+be assured that unless *all* servers are broken or colluding against them, the result is
+correct.  It is in everybody's interest to have very different parties run the
+servers.
+
+Names are allocated to users on a first-come first-serve basis. Specifically,
+any user can at any time contact a server and ask them to "assign name N to
+public key P". Rate-limiting and spam prevention is the responsibility of any
+individual server: currently, a non-profit email address is required for
+registration. The bearer of a name can transfer the name to another key
+(their own or somebody else's) by signing with the secret key associated with
+the name the message "transfer name N to public key P'" and sending it to a
+server. This is to allow for key revocations/upgrades and (domain) name sales.
+
+When a server receives a request, it first verifies that it is valid (the name
+is available / the transfer is signed by the bearer of the name) and then
+encrypts it and forwards it to other servers. With some regularity, each server
+commits to the requests it has forwarded, reveals them, handles all the
+requests, and signs the new name assignments. When all servers have signed the
+name assignments for the round, each server atomically switches to serving the
+new assignments.
+
+To speed up updating and signing the name assignments, the names-pubkey mapping
+is stored in a radix tree with Merkle hashing. That is, every radix tree node
+also contains the hash of its children. This way the hash of the root node
+summarizes the state of all the names and can be signed instead of the possibly
+large table of all names. When a client asks what public key is associated with
+a name, the server also returns all children of the nodes on the path from the
+root to the node storing that name and the corresponding public key. The client
+can use the hashes of these nodes to compute the root and be assured that the
+name,pubkey pair is indeed present in that tree. Of course, the client shall
+also verify the servers' signatures on the root.
+
+# Extra
+
+Using a Merkle tree for the mapping enables other useful features:
+  - Clients with accurate clocks can require the root timestamp to be within
+    some interval of the current time.
+  - Clients can compare the roots they saw to detect server collusion. For
+    example, if there are two different roots for the same round number, on of
+    them must be the result of wrongdoing on the part of servers.
+  - If one wishes to verify that the servers are operating correctly, they do
+    not need to store the whole mapping -- the root can be updated based on the
+	requests without knowing about significantly more names than those who were
+	transferred.
+  - The verifier can also serve as a coherent cache
+
+None of these is currently implemented.
+
+# Use cases
+
+I patched [pond](https://pond.imperialviolet.org) (an asynchronous messaging
+system) to support lookuing up keys from dename as an introduction mechanism.
+The code is [here](https://github.com/andres-erbsen/pond), you are welcome to
+play with it.
+
+Some other obvious candidates are synchronous messaging, document signing,
+logging in to websites, ssh host authentication, .onion/cjnds addressing, tying
+TLS keys to domain names, and online voting.
+
+# Related work
+
+<http://www.aaronsw.com/weblog/squarezooko> proposes a design to solve the same
+problem. Namecoin exists and (sort-of) works. Sadly, these systems are bound to
+use enormous amounts of hashing power to stay secure, and even then there
+remains the risk of 51% of the power falling into bad hands. The described cost
+of this will also most likely be passed on to users, this increasing the
+adaption barrier.
+
+# Further work
+
+- How to better prevent name hoarding / spam?
+- How can different applications "gossip" about the roots to ensure that users
+  have a consistent view of the world?
