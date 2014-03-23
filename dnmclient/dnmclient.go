@@ -32,8 +32,8 @@ type DenameClient struct {
 	dialer    proxy.Dialer
 }
 
-const DefaultHostname = "dename.xvm.mit.edu"
-const PilotVerifier_b64 = `Cl0KKAgBEAAYAiIgPG0f8Z363+bqSk1VfzDAaQbD7ggPM2MvAo8P6o8Xm7gKJggGGAEiIBYgQcQMqQlL6/IH0GL0PHdRjCu1oV+M4hb7Hdxa/+YLEPCa1pYFGICangEiQGQ2D0X+BPOX4XNyOco6BbksfBUF2DfegUaKYXnXxGnvyoh7AoAn7YeeSRxcqtMMhSJatwBG3hO+61u7LX5p9wk==`
+const PilotVerifierAddress = "dename.xvm.mit.edu:6362"
+const PilotVerifierPK_b64 = `CiAcyU+IpjRwtyEwqEJUYYe/bbnTNYk6m6GfYMF8RUJLtBIgtO65QtmY8eMxLHJ6EiLPGb/HMBdoe/h6ANs5UGZ+uW0=`
 
 var PilotVerifier *protocol.PublicKey
 var DefaultVerifiers map[int64]*protocol.PublicKey
@@ -41,7 +41,7 @@ var DefaultVerifiers map[int64]*protocol.PublicKey
 func init() {
 	var err error
 	PilotVerifier = new(protocol.PublicKey)
-	pk_bs, err := base64.StdEncoding.DecodeString(PilotVerifier_b64)
+	pk_bs, err := base64.StdEncoding.DecodeString(PilotVerifierPK_b64)
 	if err != nil {
 		panic(err)
 	}
@@ -89,7 +89,7 @@ func New(verifiers map[int64]*protocol.PublicKey, server string, proxy_dialer pr
 	if server != "" {
 		dnmc.server = server
 	} else {
-		dnmc.server = DefaultHostname
+		dnmc.server = PilotVerifierAddress
 	}
 	if proxy_dialer != nil {
 		dnmc.dialer = proxy_dialer

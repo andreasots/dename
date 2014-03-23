@@ -14,11 +14,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 )
 
 var configDir *string = flag.String("config-dir", "", "Location of the config directory [default: ~/.config/dename/]")
 
-const tokenRequestURL = "http://localhost/"
+var tokenRequestURL = "http://" + strings.Replace(dnmclient.PilotVerifierAddress, ":6362", "/", -1)
 
 const text_askEmail = "Registration of dename names is limited to keep the pool of possible names from getting exhausted. Currently, an university or non-profit email address is required for registration. The email address is used only for the purpose of rate limiting, no other information than the fact that it requested the right to register some name is stored.\nemail: "
 const text_askRegToken = "ticket from email: "
@@ -108,7 +109,7 @@ func main() {
 		}
 		iden := &protocol.Identity{Dename: &protocol.PublicKey{Ed25519: pk[:]}}
 
-		err = os.MkdirAll(*configDir, 0600)
+		err = os.MkdirAll(*configDir, 0700)
 		if err != nil {
 			barf("init: create \""+*configDir+"\" :"+err.Error(), 1)
 		}
@@ -127,7 +128,7 @@ func main() {
 			if err == nil {
 				break
 			} else {
-				fmt.Println(err.Error, ", retrying...")
+				fmt.Println(err.Error(), ", retrying...")
 			}
 		}
 		err = ioutil.WriteFile(namePath, []byte(name), 0600)

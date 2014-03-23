@@ -17,10 +17,7 @@ func main() {
 	if len(os.Args) != 3 && len(os.Args) != 2 {
 		barf("USAGE: "+os.Args[0]+" NAME [FIELD]\n", 2)
 	}
-	c, err := dnmclient.NewFromFile("dnmlookup.cfg", nil)
-	if err != nil {
-		barf(err.Error(), 1)
-	}
+	c := dnmclient.New(nil, "", nil)
 	iden, err := c.Lookup(os.Args[1])
 	if err != nil {
 		barf(err.Error(), 1)
