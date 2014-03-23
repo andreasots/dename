@@ -1,0 +1,51 @@
+% `dnmgr` User Manual
+
+Synopsis
+========
+
+dnmgr [--options] <operation> [operands]
+
+Description
+===========
+
+`dnmgr` is a command line utility for managing `dename` profiles. Dename is a
+decentralized system that securely maps usernames to profiles which can contain
+any information the user wishes. For example, it can serve as a public key
+infrastructure, a store of electronic business cards or as a domain name system.
+In this context, *secure* means that everybody who looks up a name sees the same
+profile. This guarantee holds if any one of the `dename` servers is correct, and
+as the servers are run on different infrastructure by different entities, we
+expect this to be the case in all foreseeable future.
+
+Using `dnmgr`
+-------------
+
+If this is the first time you are using `dename`, you need to create a new
+account. The easiest way to do this is to type `dnmgr init` and follow the
+instructions. You will be asked to enter an email address and receive a message
+on it -- this policy is in place to prevent one person from grabbing very many
+names. After this, you will be able to pick any name that is not already taken.
+
+        dnmgr init
+
+The `dename` configuration, including the secret key used to modify the
+public profile, is by default stored in `~/.config/dename`. **Please make sure
+nobody else is able to get their hands on the contents of this directory** -- if
+they could, they would be able to change your profile, which would lead to
+various nasty consequences depending on how it is used. For example, if the
+profile stores contact information, they would be able to redirect messages sent
+to you.
+
+`dnmgr set *FIELD* *CONTENT*`
+:   Set a field in the current profile. The field can be specified by either a
+    human-readable field name, if it is known to this program, or by an
+    unambiguous numerical identifier. For example, to publish your ssh public
+    keys on your profile, either of the following will do:
+
+        dnmgr set ssh "$(cut -d' ' -f-2 ~/.ssh/id_*.pub)"
+        dnmgr set 22  "$(cut -d' ' -f-2 ~/.ssh/id_*.pub)"
+
+    Similarly, to include ssh host identification keys, use either of:
+
+        dnmgr set ssh-host "example.com $(cut -d' ' -f-2 /etc/ssh/ssh_host_rsa_key.pub)"
+        dnmgr set 21       "example.com $(cut -d' ' -f-2 /etc/ssh/ssh_host_rsa_key.pub)"

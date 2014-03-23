@@ -1,0 +1,10 @@
+% `dnmlookup` User Manual
+
+Synopsis
+========
+
+dnmlookup <username> [FIELDNAME]
+
+Looks up the specified field in the specified user's public profile. If the
+field name is omitted, the whole profile is returned as a protocol buffer
+structure. See `dnmgr` for details.
