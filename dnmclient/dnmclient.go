@@ -17,6 +17,7 @@ import (
 )
 
 var ErrRejected = errors.New("Server refused to transfer the name")
+var ErrNotFound = errors.New("Name not found")
 
 type Cfg struct {
 	Peer map[string]*struct {
@@ -199,6 +200,11 @@ func (dnmc *DenameClient) Lookup(name string) (iden *protocol.Identity, err erro
 		return
 	}
 
+	// TODO: merklemap: proof of absence
+	if response.LookupResponse.PublicKey == nil {
+		return nil, ErrNotFound
+	}
+
 	if err = dnmc.CheckFreshness(root, response.Freshness); err != nil {
 		return nil, err
 	}
@@ -224,7 +230,8 @@ func Lookup(name string) (*protocol.Identity, error) {
 	return New(nil, "", nil).Lookup(name)
 }
 
-func (dnmc *DenameClient) Transfer(sk *protocol.Ed25519Secret, name string, iden *protocol.Identity) (xfer, sig []byte) {
+func (dnmc *DenameClient) Transfer(sk *protocol.Ed25519Secret, name string,
+	iden *protocol.Identity) (xfer, sig []byte) {
 	transfer := &protocol.TransferName{Name: []byte(name), NewIdentity: iden}
 	transfer_bs, err := proto.Marshal(transfer)
 	if err != nil {
@@ -247,18 +254,24 @@ func (dnmc *DenameClient) GetFreshnessToken() (ret []byte, err error) {
 	return dnmc.VerifyConsensusResult(response.RootConsensus)
 }
 
-func (dnmc *DenameClient) Accept(sk *protocol.Ed25519Secret, xfer []byte) (err error) {
+func (dnmc *DenameClient) Accept(sk *protocol.Ed25519Secret,
+	xfer, xsig []byte) (err error) {
 	freshRoot, err := dnmc.GetFreshnessToken()
 	if err != nil {
 		return
 	}
-	accept := &protocol.AcceptTransfer{Transfer: xfer, FreshRoot: freshRoot}
+	accept := &protocol.AcceptTransfer{Transfer: xfer,
+		TransferSignature: xsig, FreshRoot: freshRoot}
 	accept_bs, err := proto.Marshal(accept)
 	if err != nil {
 		panic(err)
 	}
 	sig := sk.SignDetached(accept_bs, protocol.SIGN_TAG_ACCEPT)
-	response, err := dnmc.roundTrip(&protocol.C2SMessage{Transfer: &protocol.SignedAcceptedTransfer{Accept: accept_bs, Signature: sig}})
+	response, err := dnmc.roundTrip(&protocol.C2SMessage{
+		Transfer: &protocol.SignedAcceptedTransfer{
+			Accept: accept_bs, Signature: sig,
+		},
+	})
 	if err != nil {
 		return
 	}
@@ -268,8 +281,14 @@ func (dnmc *DenameClient) Accept(sk *protocol.Ed25519Secret, xfer []byte) (err e
 	return nil
 }
 
-func Accept(sk *protocol.Ed25519Secret, signed_transfer []byte) error {
-	return New(nil, "", nil).Accept(sk, signed_transfer)
+func (dnmc *DenameClient) Modify(sk *protocol.Ed25519Secret, name string,
+	iden *protocol.Identity) (err error) {
+	xfer, xsig := dnmc.Transfer(sk, name, iden)
+	return dnmc.Accept(sk, xfer, xsig)
+}
+
+func Accept(sk *protocol.Ed25519Secret, signed_transfer, sig []byte) error {
+	return New(nil, "", nil).Accept(sk, signed_transfer, sig)
 }
 
 func (dnmc *DenameClient) Register(sk *protocol.Ed25519Secret, iden *protocol.Identity, name, regtoken_b64 string) error {

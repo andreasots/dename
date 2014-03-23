@@ -56,13 +56,28 @@ func (m *PublicKey) GetCurve25519() []byte {
 }
 
 type Identity struct {
-	Dename           *PublicKey `protobuf:"bytes,1,req,name=dename" json:"dename,omitempty"`
-	XXX_unrecognized []byte     `json:"-"`
+	Dename           *PublicKey                `protobuf:"bytes,1,req,name=dename" json:"dename,omitempty"`
+	XXX_extensions   map[int32]proto.Extension `json:"-"`
+	XXX_unrecognized []byte                    `json:"-"`
 }
 
 func (m *Identity) Reset()         { *m = Identity{} }
 func (m *Identity) String() string { return proto.CompactTextString(m) }
 func (*Identity) ProtoMessage()    {}
+
+var extRange_Identity = []proto.ExtensionRange{
+	{2, 536870911},
+}
+
+func (*Identity) ExtensionRangeArray() []proto.ExtensionRange {
+	return extRange_Identity
+}
+func (m *Identity) ExtensionMap() map[int32]proto.Extension {
+	if m.XXX_extensions == nil {
+		m.XXX_extensions = make(map[int32]proto.Extension)
+	}
+	return m.XXX_extensions
+}
 
 func (m *Identity) GetDename() *PublicKey {
 	if m != nil {

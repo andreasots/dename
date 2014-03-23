@@ -7,6 +7,7 @@ message PublicKey {
 
 message Identity {
 	required PublicKey dename = 1;
+	extensions 2 to max;
 }
 
 message TransferName {

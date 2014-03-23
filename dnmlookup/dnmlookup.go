@@ -2,7 +2,9 @@ package main
 
 import (
 	"code.google.com/p/goprotobuf/proto"
+	"fmt"
 	"github.com/andres-erbsen/dename/dnmclient"
+	"github.com/andres-erbsen/dename/protocol"
 	"os"
 )
 
@@ -23,7 +25,16 @@ func main() {
 	if err != nil {
 		barf(err.Error(), 1)
 	}
-	if len(os.Args) == 2 || os.Args[2] == "1" || os.Args[2] == "dename" {
+
+	if len(os.Args) == 2 {
+		iden_bs, err := proto.Marshal(iden)
+		if err != nil {
+			panic(err)
+		}
+		if _, err = os.Stdout.Write(iden_bs); err != nil {
+			barf(err.Error(), 1)
+		}
+	} else if os.Args[2] == "dename" || os.Args[2] == "1" {
 		dename_bs, err := proto.Marshal(iden.Dename)
 		if err != nil {
 			panic(err)
@@ -32,6 +43,29 @@ func main() {
 			barf(err.Error(), 1)
 		}
 	} else {
-		barf("Unknown field type", 2)
+		n, lookup_ok := protocol.ProfileFields[os.Args[2]]
+		_, scan_err := fmt.Sscan(os.Args[2], &n)
+		if !(lookup_ok || scan_err == nil) {
+			barf("set: unknown non-numeric field type", 2)
+		}
+		desc := proto.ExtensionDesc{
+			ExtendedType:  (*protocol.Identity)(nil),
+			ExtensionType: ([]byte)(nil),
+			Field:         n,
+			Tag:           fmt.Sprintf("bytes,%d,opt", n),
+		}
+		func() {
+			// repeatedly registrering the same extension panics
+			defer recover()
+			proto.RegisterExtension(&desc)
+		}()
+
+		result_bs, err := proto.GetExtension(iden, &desc)
+		if err != nil {
+			barf(err.Error(), 1)
+		}
+		if _, err = os.Stdout.Write(result_bs.([]byte)); err != nil {
+			barf(err.Error(), 1)
+		}
 	}
 }
