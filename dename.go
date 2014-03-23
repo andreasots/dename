@@ -172,11 +172,6 @@ func main() {
 		log.Fatalf("Load secret key from \"sk\": %s", err)
 	}
 
-	dn.regtoken_mac_key, err = ioutil.ReadFile(cfg.Clients.RegTokenMacKeyFile)
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	dn.merklemap, err = merklemap.Open(cfg.Naming.File)
 	if err != nil {
 		log.Fatalf("merklemap.Open(cfg.Naming.File): %s", err)
@@ -263,6 +258,10 @@ func main() {
 	go dn.ListenForPeers(cfg.General.ListenAt)
 	go dn.ConnectToPeers(cfg)
 	if cfg.Clients.ListenAt != "" {
+		dn.regtoken_mac_key, err = ioutil.ReadFile(cfg.Clients.RegTokenMacKeyFile)
+		if err != nil {
+			log.Fatal(err)
+		}
 		for i := 0; i < cfg.Clients.ConcurrentTransfers; i++ {
 			dn.transferLimiter <- struct{}{}
 		}
@@ -402,10 +401,9 @@ func (dn *Dename) HandleClientTransfer(reply *protocol.S2CMessage, round int64,
 			regtoken = nil
 			break
 		}
-		// fmt.Printf("(%d, 'verify ticket'),\n", time.Now().UnixNano())
 		mac := hmac.New(sha256.New, dn.regtoken_mac_key)
 		mac.Write(regtoken[:16])
-		if !hmac.Equal(mac.Sum(nil), regtoken[16:]) {
+		if !hmac.Equal(mac.Sum(nil)[:16], regtoken[16:]) {
 			regtoken = nil
 			break
 		}
