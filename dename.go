@@ -426,14 +426,15 @@ func (dn *Dename) HandleClientTransfer(reply *protocol.S2CMessage, round int64,
 	if err != nil {
 		return
 	}
-	// fmt.Printf("(%d, '<-ticket_freshness_checked'),\n", time.Now().UnixNano())
+	if old_pk == nil && regtoken == nil {
+		return
+	}
 	if old_pk == nil && regtoken != nil {
 		<-ticket_freshness_checked
 		if !ticket_fresh {
 			return
 		}
 	}
-	// fmt.Printf("(%d, 'lock name'),\n", time.Now().UnixNano())
 	dn.ongoing_transfers_mutex.Lock()
 	if _, locked := dn.ongoing_transfers[string(name)]; locked {
 		dn.ongoing_transfers_mutex.Unlock()
@@ -500,7 +501,7 @@ func (dn *Dename) ValidateRequest(dst_round int64,
 
 	<-resolve_done
 	if old_iden != nil {
-		if _, err = old_iden.Dename.Verify(accept.Transfer, protocol.SIGN_TAG_TRANSFER); err != nil {
+		if err = old_iden.Dename.VerifyDetached(accept.Transfer, accept.TransferSignature, protocol.SIGN_TAG_TRANSFER); err != nil {
 			return nil, nil, nil, err
 		}
 	}
