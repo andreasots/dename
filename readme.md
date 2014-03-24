@@ -1,5 +1,5 @@
-What `dename` is
-================
+`dename`
+========
 
 Dename is a decentralized system that securely maps usernames to
 profiles which can contain any information the user wishes. For example,
@@ -8,7 +8,7 @@ business cards or as a domain name system. In this context, *secure*
 means that everybody who looks up a name sees the same profile.
 
 What it does
-============
+------------
 
 Let's say a friend of yours wishes to grant you write access to a `git`
 repository on his server. However, as nobody other than the two of you
@@ -57,7 +57,7 @@ differently:
     go get github.com/andres-erbsen/dename/dnmgr github.com/andres-erbsen/dename/dnmlookup
 
 How `dename` works
-==================
+------------------
 
 The main goal of dename is to allow human-readable identifiers (names)
 to be securely and unambiguously resolved to public keys, thus squaring
@@ -102,21 +102,24 @@ least one server is correct then the profile he saw is the same that
 everybody else sees.
 
 Features to come
-================
+----------------
 
 Using a Merkle tree for the mapping enables other useful features: -
 Clients with accurate clocks can require the root timestamp to be within
-some interval of the current time. - Clients can compare the roots they
-saw to detect server collusion. For example, if there are two different
-roots for the same round number, on of them must be the result of
-wrongdoing on the part of servers. - If one wishes to verify that the
-servers are operating correctly, they do not need to store the whole
-mapping -- the root can be updated based on the requests without knowing
-about significantly more names than those who were transferred. - The
-verifier can also serve as a coherent cache
+some interval of the current time.
+
+-   Clients can compare the roots they saw to detect server collusion.
+    For example, if there are two different roots for the same round
+    number, on of them must be the result of wrongdoing on the part of
+    servers.
+-   If one wishes to verify that the servers are operating correctly,
+    they do not need to store the whole mapping -- the root can be
+    updated based on the requests without knowing about significantly
+    more names than those who were transferred.
+-   The verifier can also serve as a coherent cache
 
 Use cases
-=========
+---------
 
 How to use `dename` for distributing ssh keys is described above. I
 patched [pond](https://pond.imperialviolet.org) (an asynchronous
@@ -131,7 +134,7 @@ signing, logging in to websites, ssh host authentication (trivial, see
 names, and online voting.
 
 Related work
-============
+------------
 
 <http://www.aaronsw.com/weblog/squarezooko> proposes a design to solve
 the same problem. Namecoin exists and (sort-of) works. Sadly, these
@@ -144,33 +147,30 @@ same problem, but in a very different setting -- they assume that there
 is an universally trusted party.
 
 Open questions
-==============
+--------------
 
 -   How to better prevent name hoarding / spam?
 -   How can different applications "gossip" about the roots to ensure
     that users have a consistent view of the world?
 
 Contribute
-==========
+----------
 
-Use it and report back!
------------------------
+### Use it and report back!
 
 We would love to hear how `dename` worked for you, and even if it really
 didn't you should let us know so that we can fix the issue, saving
 somebody else the trouble. Technical and non-technical feedback are
 equally appreciated. To get in touch with us, use the Github issues link
-on this page or [contact us] by email.
+on this page or [contact us](mailto:dename@mit.edu) by email.
 
-Code for `dename`
------------------
+### Code for `dename`
 
 There is a lot to be done: the issues page and "Features to come" here
 should give some idea of what I would like to see happen to this
 project.
 
-Integrate dename with `$YOUR_FAVORITE_APPLICATION`
---------------------------------------------------
+### Integrate dename with `$YOUR_FAVORITE_APPLICATION`
 
 `dename` is designed to be easy to integrated into other applications
 for a seamless user experience. See "use cases" above for ideas and
@@ -178,14 +178,11 @@ for a seamless user experience. See "use cases" above for ideas and
 long until there is an OTR-only chat-client that provides usable
 security?
 
-Run a server
-------------
+### Run a server
 
 The security of `dename` depends on having a diverse set of verification
 servers. Right now, we have two machines that might even be in the same
 rack -- this is very much a non-ideal situation. If you are not at MIT,
 have a machine to spare (it does not have to be fancy) and
 `doc/server-operators-guide.txt` does not seem gibberish to you,
-[contact us] and let's talk!
-
-[contact us](mailto:dename@mit.edu)
+[contact us](mailto:dename@mit.edu) and let's talk!
