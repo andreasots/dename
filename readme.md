@@ -59,7 +59,7 @@ differently:
 How `dename` works
 ------------------
 
-The main goal of dename is to allow human-readable identifiers (names)
+The main goal of `dename` is to allow human-readable identifiers (names)
 to be securely and unambiguously resolved to public keys, thus squaring
 the [Zooko's triangle](http://en.wikipedia.org/wiki/Zooko's\_triangle)
 and making public-key cryptography easier to use. To achieve this, a
@@ -123,7 +123,7 @@ Use cases
 
 How to use `dename` for distributing ssh keys is described above. I
 patched [pond](https://pond.imperialviolet.org) (an asynchronous
-messaging system) to support looking up keys from dename as an
+messaging system) to support looking up keys from `dename` as an
 introduction mechanism. The code is
 [here](https://github.com/andres-erbsen/pond), you are welcome to play
 with it.
@@ -170,7 +170,7 @@ There is a lot to be done: the issues page and "Features to come" here
 should give some idea of what I would like to see happen to this
 project.
 
-### Integrate dename with `$YOUR_FAVORITE_APPLICATION`
+### Integrate `dename` with `$YOUR_FAVORITE_APPLICATION`
 
 `dename` is designed to be easy to integrated into other applications
 for a seamless user experience. See "use cases" above for ideas and
