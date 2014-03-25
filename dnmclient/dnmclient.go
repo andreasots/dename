@@ -32,8 +32,8 @@ type DenameClient struct {
 	dialer    proxy.Dialer
 }
 
-const PilotVerifierAddress = "dename.xvm.mit.edu:6362"
-const PilotVerifierPK_b64 = `CiAcyU+IpjRwtyEwqEJUYYe/bbnTNYk6m6GfYMF8RUJLtBIgtO65QtmY8eMxLHJ6EiLPGb/HMBdoe/h6ANs5UGZ+uW0=`
+const PilotVerifierAddress = "dename.mit.edu:6362"
+const PilotVerifierPK_b64 = `CiAKGedFdJVTRsgV1fKp686C23GAnud8cbNirmy2Yl8nfxIgbwnVS9SJlLVpXoUDvQIKWUwAmhgq+t2uXCSE4+Y93yg=`
 
 var PilotVerifier *protocol.PublicKey
 var DefaultVerifiers map[int64]*protocol.PublicKey
