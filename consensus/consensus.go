@@ -114,9 +114,16 @@ func (c *Consensus) RefreshPeer(id int64) (err error) {
 		log.Fatalf("last_round_they_signed: %s", err)
 	}
 
-	// they may be missing our signature from the round they signed
-	rows, err := c.db.Query(`SELECT message FROM messages WHERE sender = $1
-		AND ((round = $2 AND type = $3) OR $2 < round) ORDER BY id`,
+	rows, err := c.db.Query(`SELECT message FROM messages
+		WHERE (
+			sender = $1  -- messages we sent
+		) AND (
+				(round = $2 AND type = $3) -- signature from last round
+				OR
+				(round > $2) -- everything for rounds after that
+		) AND (
+			round > ((SELECT MAX(id) FROM rounds) - 10) -- too old, doesn't matter
+		) ORDER BY id`,
 		c.our_id, last_round_they_signed, PUBLISH)
 	if err != nil {
 		log.Fatalf("Cannot load outgoing messages: %s", err)
