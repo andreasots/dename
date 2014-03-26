@@ -65,7 +65,7 @@ func (dn *Dename) ConnectToPeers(cfg *Cfg) {
 			var id int64
 			fmt.Sscan(id_str, &id)
 			dn.peers[id].Lock()
-			connected := dn.peers[id].conn != nil
+			connected := len(dn.peers[id].connections) > 0
 			dn.peers[id].Unlock()
 			if id == dn.us.id || connected {
 				continue
@@ -78,6 +78,12 @@ func (dn *Dename) ConnectToPeers(cfg *Cfg) {
 		}
 		time.Sleep(time.Second) // TODO: replace with callback on connection drop
 	}
+}
+
+type authConn struct {
+	conn   net.Conn
+	cipher cipher.AEAD
+	nonce  uint64
 }
 
 func (dn *Dename) peerConnected(conn net.Conn, openedByUs bool) {
@@ -126,22 +132,14 @@ func (dn *Dename) peerConnected(conn net.Conn, openedByUs bool) {
 		return // if they did not have the shared key, this will return
 	}
 
-	shouldBeOpenedByUs := dn.us.id < peer_id
-	newPreferredConnection := openedByUs == shouldBeOpenedByUs
+	wConn := &authConn{conn, write_cipher, 1} // 0 has been used for handshake
 	peer.Lock()
-	if !peer.havePreferredConnection || newPreferredConnection {
-		if peer.conn != nil {
-			peer.conn.Close()
-		}
-		peer.cipher = write_cipher
-		peer.conn = conn
-		peer.nonce = 1 // 0 has been used for handshake
-		peer.havePreferredConnection = newPreferredConnection
-	}
+	peer.connections[wConn] = struct{}{}
 	peer.Unlock()
 
+	log.Printf("Established connection to %d (%d total)", peer.id, len(peer.connections))
 	go dn.c.RefreshPeer(peer_id)
-	go peer.receiveLoop(conn, read_cipher, dn.dispatch)
+	go peer.receiveLoop(conn, read_cipher, wConn, dn.dispatch)
 }
 
 func writeAuth(conn net.Conn, cipher cipher.AEAD, nonce uint64, msg []byte) (
@@ -178,14 +176,11 @@ func readAuth(conn net.Conn, cipher cipher.AEAD, nonce uint64) (
 }
 
 func (peer *Peer) receiveLoop(conn net.Conn, cipher cipher.AEAD,
-	handleFunc func(int64, []byte)) {
+	writeConn *authConn, handleFunc func(int64, []byte)) {
 	defer func() {
 		peer.Lock()
-		if peer.conn != nil {
-			peer.conn.Close()
-			peer.conn = nil
-			peer.havePreferredConnection = false
-		}
+		conn.Close()
+		delete(peer.connections, writeConn)
 		peer.Unlock()
 	}()
 	for nonce := uint64(1); nonce != 0; nonce++ {
@@ -198,16 +193,23 @@ func (peer *Peer) receiveLoop(conn net.Conn, cipher cipher.AEAD,
 }
 
 func (peer *Peer) send(tag uint8, msg []byte) error {
+	var nonce uint64
+	var w *authConn
+
 	peer.Lock()
-	conn := peer.conn
-	cipher := peer.cipher
-	nonce := peer.nonce
-	peer.nonce++
+	for w = range peer.connections {
+		break
+	}
+	if w != nil {
+		nonce = w.nonce
+		w.nonce++
+	}
 	peer.Unlock()
-	if conn == nil {
+
+	if w == nil || w.conn == nil {
 		return errors.New(fmt.Sprintf("SendToPeer: No connection to %d", peer.id))
 	}
-	return writeAuth(conn, cipher, nonce, append(msg, tag))
+	return writeAuth(w.conn, w.cipher, nonce, append(msg, tag))
 }
 
 func (peer *Peer) ConsensusSend(msg_bs []byte) error {
