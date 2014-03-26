@@ -718,7 +718,8 @@ func (dn *Dename) MaintainFreshness(t0 time.Time, dt time.Duration) {
 		dn.round_completed.RUnlock()
 		expected_round_finalized := int64(t.Sub(t0) / dt)
 		if round > expected_round_finalized {
-			log.Fatal("Ahead of schedule")
+			log.Print("WARNING: Ahead of schedule")
+			continue
 		} else if round == expected_round_finalized || round == -1 {
 			continue // we are on time
 		} // we are behind, let's compensate with freshness assertions
