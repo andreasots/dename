@@ -193,23 +193,28 @@ func (peer *Peer) receiveLoop(conn net.Conn, cipher cipher.AEAD,
 }
 
 func (peer *Peer) send(tag uint8, msg []byte) error {
-	var nonce uint64
-	var w *authConn
-
-	peer.Lock()
-	for w = range peer.connections {
-		break
-	}
-	if w != nil {
-		nonce = w.nonce
+	for {
+		peer.Lock()
+		if len(peer.connections) == 0 {
+			peer.Unlock()
+			return errors.New(fmt.Sprintf("SendToPeer: No connection to %d", peer.id))
+		}
+		var w *authConn
+		for w = range peer.connections {
+			break
+		}
+		nonce := w.nonce
 		w.nonce++
-	}
-	peer.Unlock()
+		peer.Unlock()
 
-	if w == nil || w.conn == nil {
-		return errors.New(fmt.Sprintf("SendToPeer: No connection to %d", peer.id))
+		err := writeAuth(w.conn, w.cipher, nonce, append(msg, tag))
+		if err == nil {
+			return nil
+		}
+		peer.Lock()
+		delete(peer.connections, w)
+		peer.Unlock()
 	}
-	return writeAuth(w.conn, w.cipher, nonce, append(msg, tag))
 }
 
 func (peer *Peer) ConsensusSend(msg_bs []byte) error {
