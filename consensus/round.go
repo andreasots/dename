@@ -481,8 +481,8 @@ func (r *round) startHandlingPublishes() {
 			}
 			r.signed_result.Signatures[r.signatures_on_result] = crs.Signatures[0]
 			r.signed_result.Signers[r.signatures_on_result] = *msg.Server
+			r.signatures_on_result++
 		}
-		r.signatures_on_result++
 		signed_result_bs, err := proto.Marshal(&r.signed_result)
 		if err != nil {
 			panic(err)

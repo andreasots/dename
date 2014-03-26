@@ -738,7 +738,7 @@ func (dn *Dename) MaintainFreshness(t0 time.Time, dt time.Duration) {
 			dn.round_completed.Unlock()
 			continue
 		}
-		*dn.round_completed.AuxResults[dn.us.id] = freshness_signed_bs
+		*dn.round_completed.AuxResults[dn.us.id] = freshness_signed_bs // FIXME: initialize round_competed on startup
 		dn.round_completed.Unlock()
 		for _, peer := range dn.peers {
 			peer.DenameSend(freshness_signed_bs)
