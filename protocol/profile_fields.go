@@ -41,3 +41,19 @@ func (iden *Identity) Get(field int32) ([]byte, error) {
 	}
 	return ret.([]byte), err
 }
+
+func (iden *Identity) Set(field int32, value []byte) error {
+	desc := proto.ExtensionDesc{
+		ExtendedType:  (*Identity)(nil),
+		ExtensionType: ([]byte)(nil),
+		Field:         field,
+		Tag:           fmt.Sprintf("bytes,%d,opt", field),
+	}
+	func() {
+		// repeatedly registrering the same extension panics
+		defer recover()
+		proto.RegisterExtension(&desc)
+	}()
+
+	return proto.SetExtension(iden, &desc, value)
+}
