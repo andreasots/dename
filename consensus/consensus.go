@@ -105,7 +105,8 @@ func (c *Consensus) broadcast(msg *ConsensusMSG) {
 	}
 }
 
-func (c *Consensus) RefreshPeer(id int64) (err error) {
+func (c *Consensus) ResendRecentTo(id int64, send func([]byte) error) (
+	err error) {
 	last_round_they_signed := int64(-1)
 	err = c.db.QueryRow(`SELECT round FROM messages WHERE sender = $1 AND
 		type = $2 ORDER BY round DESC LIMIT 1`, id, PUBLISH).Scan(
@@ -135,8 +136,8 @@ func (c *Consensus) RefreshPeer(id int64) (err error) {
 		if err := rows.Scan(&msg_bs); err != nil {
 			log.Fatalf("our msg from db: rows.Scan(&msg_bs): %s", err)
 		}
-		if err := c.Peers[id].ConsensusSend(msg_bs); err != nil {
-			log.Printf("RefreshPeer: c.Peers[id].Send(msg_bs): %s", err)
+		if err := send(msg_bs); err != nil {
+			log.Printf("ResendRecentTo %d: send(msg_bs): %s", id, err)
 			return err
 		}
 	}

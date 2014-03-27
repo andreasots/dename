@@ -43,11 +43,12 @@ type Peer struct {
 	id int64
 
 	sync.Mutex
+	connectTo string
+	dn        *Dename
 	// mutable:
-	conn                    net.Conn
-	cipher                  cipher.AEAD
-	nonce                   uint64
-	havePreferredConnection bool
+	writeConn   net.Conn
+	writeCipher cipher.AEAD
+	writeNonce  uint64
 }
 
 type Dename struct {
@@ -178,7 +179,7 @@ func main() {
 	}
 
 	for id_str, peercfg := range cfg.Peer {
-		peer := new(Peer)
+		peer := &Peer{connectTo: peercfg.ConnectTo, dn: dn}
 		if _, err := fmt.Sscan(id_str, &peer.id); err != nil {
 			log.Fatal("Peer names must be integers, for example [peer \"1\"]")
 		}
@@ -256,7 +257,7 @@ func main() {
 	}
 
 	go dn.ListenForPeers(cfg.General.ListenAt)
-	go dn.ConnectToPeers(cfg)
+	go dn.ConnectToPeers()
 	if cfg.Clients.ListenAt != "" {
 		dn.regtoken_mac_key, err = ioutil.ReadFile(cfg.Clients.RegTokenMacKeyFile)
 		if err != nil {
