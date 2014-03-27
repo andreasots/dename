@@ -45,23 +45,11 @@ func main() {
 		if !(lookup_ok || scan_err == nil) {
 			barf("set: unknown non-numeric field type", 2)
 		}
-		desc := proto.ExtensionDesc{
-			ExtendedType:  (*protocol.Identity)(nil),
-			ExtensionType: ([]byte)(nil),
-			Field:         n,
-			Tag:           fmt.Sprintf("bytes,%d,opt", n),
-		}
-		func() {
-			// repeatedly registrering the same extension panics
-			defer recover()
-			proto.RegisterExtension(&desc)
-		}()
-
-		result_bs, err := proto.GetExtension(iden, &desc)
+		result_bs, err := iden.Get(n)
 		if err != nil {
 			barf(err.Error(), 1)
 		}
-		if _, err = os.Stdout.Write(result_bs.([]byte)); err != nil {
+		if _, err = os.Stdout.Write(result_bs); err != nil {
 			barf(err.Error(), 1)
 		}
 	}
