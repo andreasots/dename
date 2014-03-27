@@ -226,10 +226,6 @@ func (dnmc *DenameClient) Lookup(name string) (iden *protocol.Identity, err erro
 	return
 }
 
-func Lookup(name string) (*protocol.Identity, error) {
-	return New(nil, "", nil).Lookup(name)
-}
-
 func (dnmc *DenameClient) Transfer(sk *protocol.Ed25519Secret, name string,
 	iden *protocol.Identity) (xfer, sig []byte) {
 	transfer := &protocol.TransferName{Name: []byte(name), NewIdentity: iden}
@@ -238,11 +234,6 @@ func (dnmc *DenameClient) Transfer(sk *protocol.Ed25519Secret, name string,
 		panic(err)
 	}
 	return transfer_bs, sk.SignDetached(transfer_bs, protocol.SIGN_TAG_TRANSFER)
-}
-
-func Transfer(sk *protocol.Ed25519Secret, name string, pk *protocol.Identity) (
-	xfer, sig []byte) {
-	return New(nil, "", nil).Transfer(sk, name, pk)
 }
 
 func (dnmc *DenameClient) GetFreshnessToken() (ret []byte, err error) {
@@ -287,10 +278,6 @@ func (dnmc *DenameClient) Modify(sk *protocol.Ed25519Secret, name string,
 	return dnmc.Accept(sk, xfer, xsig)
 }
 
-func Accept(sk *protocol.Ed25519Secret, signed_transfer, sig []byte) error {
-	return New(nil, "", nil).Accept(sk, signed_transfer, sig)
-}
-
 func (dnmc *DenameClient) Register(sk *protocol.Ed25519Secret, iden *protocol.Identity, name, regtoken_b64 string) error {
 	regtoken, err := base64.StdEncoding.DecodeString(regtoken_b64)
 	if err != nil {
@@ -321,8 +308,4 @@ func (dnmc *DenameClient) Register(sk *protocol.Ed25519Secret, iden *protocol.Id
 		return ErrRejected
 	}
 	return nil
-}
-
-func Register(sk *protocol.Ed25519Secret, iden *protocol.Identity, name, regtoken string) error {
-	return New(nil, "", nil).Register(sk, iden, name, regtoken)
 }
