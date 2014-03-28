@@ -121,6 +121,7 @@ type Cfg struct {
 }
 
 func main() {
+    log.SetOutput(os.Stdout)
 	go func() {
 		log.Println(http.ListenAndServe("localhost:6060", nil))
 	}()
@@ -141,7 +142,7 @@ func main() {
 		freshnessThreshold: cfg.Clients.FreshnessThreshold,
 		transferLimiter:    make(chan struct{}, cfg.Clients.ConcurrentTransfers),
 	}
-	dn.db, err = sql.Open("postgres", "user="+cfg.Database.User+" password="+cfg.Database.Password+" dbname="+cfg.Database.Name+" sslmode=disable")
+	dn.db, err = sql.Open("postgres", "user="+cfg.Database.User+" password="+cfg.Database.Password+" dbname="+cfg.Database.Name+" host="+cfg.Database.Host+" sslmode=disable")
 	if err != nil {
 		log.Fatalf("Cannot open database: %s", err)
 	}
