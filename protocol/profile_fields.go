@@ -31,7 +31,9 @@ func (iden *Identity) Get(field int32) ([]byte, error) {
 	}
 	func() {
 		// repeatedly registrering the same extension panics
-		defer recover()
+		defer func() {
+			recover()
+		}()
 		proto.RegisterExtension(&desc)
 	}()
 
@@ -51,7 +53,9 @@ func (iden *Identity) Set(field int32, value []byte) error {
 	}
 	func() {
 		// repeatedly registrering the same extension panics
-		defer recover()
+		defer func() {
+			recover()
+		}()
 		proto.RegisterExtension(&desc)
 	}()
 
