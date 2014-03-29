@@ -161,7 +161,6 @@ func (p *PersistentProfile) Set(field int32, value []byte) (err error) {
 func (dnmc *DenameClient) RegisterPersistent(p *PersistentProfile,
 	regtoken_b64 string) error {
 	sk := (*protocol.Ed25519Secret)(p.SecretKey)
-	fmt.Printf("register:\n%x\n%v\n%v\n%v\n", sk, p.Profile, p.Name, regtoken_b64)
 	return dnmc.Register(sk, p.Profile, p.Name, regtoken_b64)
 }
 
