@@ -269,7 +269,8 @@ func main() {
 		go dn.ListenForClients(cfg.Clients.ListenAt)
 	}
 	go dn.MaintainFreshness(t0, dt)
-	dn.c.Run()
+	go dn.c.Run()
+	select {}
 }
 
 func (dn *Dename) RoundCallback(r *consensus.RoundSummary) bool {

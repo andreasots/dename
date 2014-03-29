@@ -215,7 +215,8 @@ func (c *Consensus) Run() {
 		c.replayRound(id + 2)
 	}
 
-	c.handleMessages()
+	// in a new goroutine so that references to `round` are dropped and GC-d
+	go c.handleMessages()
 }
 
 func (c *Consensus) reloadRequests(r *round) {
