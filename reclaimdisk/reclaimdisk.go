@@ -25,14 +25,14 @@ func reclaimDiskSpace(db *sql.DB, beforeRound, downToBytes, threshold int64) {
 			SELECT ctid FROM messages WHERE type != $1 AND round < $2
 			ORDER BY id ASC LIMIT $3));`, consensus.PUSH, beforeRound, roundsToClean)
 		if err != nil {
-			log.Fatalf("(c *Consensus) diskUsage(): %s", err)
+			log.Fatalf("DELETE: %s", err)
 		}
 		if n, _ := rs.RowsAffected(); n == 0 {
 			break
 		}
 		_, err = db.Exec(`VACUUM ANALYZE messages;`)
 		if err != nil {
-			log.Fatalf("(c *Consensus) diskUsage(): %s", err)
+			log.Fatalf("VACUUM ANALYZE: %s", err)
 		}
 		remaining = diskUsage(db) - downToBytes
 	}
